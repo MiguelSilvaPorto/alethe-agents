@@ -110,8 +110,20 @@ export type GhosttySurfaceResponse = {
 /** Retângulo em coordenadas da WebView (CSS px, origem topo-esquerda). */
 export type WebRect = { x: number; y: number; width: number; height: number }
 
-export async function ghosttySpawn(id: string): Promise<GhosttySurfaceResponse> {
-  return invoke<GhosttySurfaceResponse>('ghostty_spawn', { id })
+export type GhosttySpawnArgs = {
+  id: string
+  /** Diretório inicial do terminal. undefined = padrão do shell. */
+  cwd?: string
+  /** Linha de comando a executar (ex.: "claude --flag"). undefined = shell de login. */
+  command?: string
+}
+
+export async function ghosttySpawn(args: GhosttySpawnArgs): Promise<GhosttySurfaceResponse> {
+  return invoke<GhosttySurfaceResponse>('ghostty_spawn', {
+    id: args.id,
+    cwd: args.cwd,
+    command: args.command,
+  })
 }
 
 export async function ghosttySyncFrame(

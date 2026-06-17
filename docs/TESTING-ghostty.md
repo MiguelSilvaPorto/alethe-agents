@@ -24,8 +24,15 @@ Ghostty sem janela visível, digita comandos e lê o grid de volta — provando 
 o shell embutido executa `echo`, `cd`/`pwd` e `ls`.
 
 ```sh
-npm run test:ghostty       # cargo test --lib -- --ignored --test-threads=1 terminal_runs
+# Roda os dois testes funcionais: echo/cd/ls e cwd-respeitado.
+cd src-tauri && cargo test --lib -- --ignored --test-threads=1 terminal_
+# (npm run test:ghostty roda só o terminal_runs)
 ```
+
+Cobre:
+- `terminal_runs_echo_cd_ls` — digita `echo`/`cd`/`ls` e confere a saída no grid.
+- `terminal_cwd_respected` — cria a surface com `cwd=/tmp` e confirma que `pwd`
+  reporta `/tmp` sem `cd` (prova o repasse de cwd — #5).
 
 Requer `vendor/GhosttyKit.xcframework` (rode `./src-tauri/vendor/fetch-ghostty.sh`
 uma vez). É `#[ignore]` por padrão porque toca AppKit/Metal e exige a main

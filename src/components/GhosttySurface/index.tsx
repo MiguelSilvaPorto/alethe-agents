@@ -18,6 +18,10 @@ const pendingKills = new Map<string, ReturnType<typeof setTimeout>>()
 export type GhosttySurfaceProps = {
   /** ID estável da surface — usamos o id da sub-tab (mesmo papel do ptyId). */
   surfaceId: string
+  /** Diretório inicial. undefined = padrão do shell. */
+  cwd?: string
+  /** Linha de comando a executar (agente). undefined = shell de login. */
+  command?: string
   onSpawned?: (id: string) => void
 }
 
@@ -30,15 +34,18 @@ export type GhosttySurfaceProps = {
  * `nativeTerminalMacos` está ligada (decisão no TerminalPane). Em outras
  * plataformas os comandos retornariam erro, então nem chegamos aqui.
  *
- * NESTA FASE a surface nativa é um stub colorido (sem libghostty); o objetivo é
- * provar reparenting + sincronização de layout. A surface real entra trocando o
- * stub no backend (ghostty_bridge.rs), sem mudar este componente.
+ * O `command`/`cwd` são lidos na criação da surface (o backend Ghostty spawna o
+ * processo no nascimento da surface). Trocar de sub-tab usa um `surfaceId`/key
+ * diferente, então remonta — não precisamos reagir a mudanças deles em runtime.
  */
-export function GhosttySurface({ surfaceId, onSpawned }: GhosttySurfaceProps) {
+export function GhosttySurface({ surfaceId, cwd, command, onSpawned }: GhosttySurfaceProps) {
   const placeholderRef = useRef<HTMLDivElement | null>(null)
   const lastRectRef = useRef<WebRect | null>(null)
   const rafRef = useRef<number | null>(null)
   const spawnedRef = useRef(false)
+
+  // cwd/command capturados na 1ª montagem (a surface spawna o processo uma vez).
+  const spawnArgsRef = useRef({ cwd, command })
 
   // onSpawned é recriado a cada render do pai; guardamos num ref para o efeito
   // de ciclo de vida NÃO depender dele — senão a cada re-render do TerminalPane
@@ -81,7 +88,8 @@ export function GhosttySurface({ surfaceId, onSpawned }: GhosttySurfaceProps) {
 
     const start = async () => {
       try {
-        const res = await ghosttySpawn(surfaceId)
+        const { cwd, command } = spawnArgsRef.current
+        const res = await ghosttySpawn({ id: surfaceId, cwd, command })
         if (disposed) return
         spawnedRef.current = true
         onSpawnedRef.current?.(res.id)

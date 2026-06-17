@@ -128,9 +128,12 @@ mod imp {
         app: &tauri::AppHandle,
         state: &State<'_, GhosttyState>,
         id: String,
+        cwd: Option<String>,
+        command: Option<String>,
     ) -> Result<GhosttySurfaceResponse, String> {
         let mtm = MainThreadMarker::new()
             .ok_or_else(|| "ghostty_spawn precisa rodar na main thread".to_string())?;
+        let _ = (&cwd, &command); // usados só no caminho ghostty_linked
 
         // Idempotente: o React (StrictMode / re-render) pode chamar spawn mais de
         // uma vez para o mesmo id. Sem isso, criaríamos NSViews duplicadas e
@@ -152,13 +155,23 @@ mod imp {
         #[cfg(ghostty_linked)]
         let entry = {
             use crate::ghostty_ffi::*;
+            use std::ffi::CString;
             let content_ptr = objc2::rc::Retained::as_ptr(&content) as *mut std::ffi::c_void;
             let scale = window.scale_factor().unwrap_or(2.0);
+            // CStrings vivem até depois do surface_new (ponteiros usados na chamada).
+            let cwd_c = cwd
+                .as_deref()
+                .filter(|s| !s.trim().is_empty())
+                .and_then(|s| CString::new(s).ok());
+            let cmd_c = command
+                .as_deref()
+                .filter(|s| !s.trim().is_empty())
+                .and_then(|s| CString::new(s).ok());
             let s = unsafe {
                 alethe_ghostty_surface_new(
                     content_ptr,
-                    std::ptr::null(), // cwd — ligado ao SubTab numa próxima iteração
-                    std::ptr::null(), // command — idem (shell padrão por ora)
+                    cwd_c.as_ref().map_or(std::ptr::null(), |c| c.as_ptr()),
+                    cmd_c.as_ref().map_or(std::ptr::null(), |c| c.as_ptr()),
                     scale,
                 )
             };
@@ -435,6 +448,13 @@ mod imp {
         fn terminal_runs_echo_cd_ls() {
             super::super::functional_tests::run_echo_cd_ls();
         }
+
+        #[cfg(ghostty_linked)]
+        #[test]
+        #[ignore]
+        fn terminal_cwd_respected() {
+            super::super::functional_tests::run_cwd_respected();
+        }
     }
 }
 
@@ -533,6 +553,32 @@ mod functional_tests {
 
         unsafe { alethe_ghostty_surface_free(surface) };
     }
+
+    /// Prova que o `cwd` passado a surface_new é respeitado: cria a surface em
+    /// /tmp e confirma que `pwd` (sem cd) já reporta /tmp. (#5)
+    pub fn run_cwd_respected() {
+        assert!(unsafe { alethe_ghostty_ensure_app() }, "ensure_app falhou");
+        let view = make_nsview();
+        let cwd = CString::new("/tmp").unwrap();
+        let surface = unsafe {
+            alethe_ghostty_surface_new(view, cwd.as_ptr(), std::ptr::null(), 2.0)
+        };
+        assert!(!surface.is_null(), "surface_new NULL (Metal headless?)");
+        unsafe {
+            alethe_ghostty_surface_set_content_scale(surface, 2.0, 2.0);
+            alethe_ghostty_surface_set_size(surface, 1600, 960);
+        }
+        pump(Duration::from_secs(2));
+        send(surface, "pwd\r");
+        pump(Duration::from_secs(2));
+        let screen = read_screen(surface);
+        // macOS resolve /tmp -> /private/tmp; aceita os dois.
+        assert!(
+            screen.contains("/tmp") || screen.contains("/private/tmp"),
+            "cwd inicial não respeitado (esperava /tmp):\n{screen}"
+        );
+        unsafe { alethe_ghostty_surface_free(surface) };
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -553,6 +599,8 @@ mod imp {
         _app: &tauri::AppHandle,
         _state: &State<'_, GhosttyState>,
         _id: String,
+        _cwd: Option<String>,
+        _command: Option<String>,
     ) -> Result<GhosttySurfaceResponse, String> {
         Err(UNSUPPORTED.into())
     }
@@ -588,8 +636,10 @@ pub fn ghostty_spawn(
     app: tauri::AppHandle,
     state: tauri::State<'_, GhosttyState>,
     id: String,
+    cwd: Option<String>,
+    command: Option<String>,
 ) -> Result<GhosttySurfaceResponse, String> {
-    imp::spawn(&app, &state, id)
+    imp::spawn(&app, &state, id, cwd, command)
 }
 
 #[tauri::command]

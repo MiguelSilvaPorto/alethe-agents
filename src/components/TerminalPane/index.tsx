@@ -30,6 +30,7 @@ import { SubTabsLane } from '../SubTabsLane'
 import { XTermView } from '../XTermView'
 import { GhosttySurface } from '../GhosttySurface'
 import { shouldUseNativeBackend } from '../../lib/platform'
+import { buildGhosttyCommand } from '../../lib/ghosttyCommand'
 import styles from './TerminalPane.module.css'
 
 export type TerminalPaneProps = {
@@ -380,6 +381,8 @@ export const TerminalPane = memo(function TerminalPane({
                 <GhosttySurface
                   key={activeTab.id}
                   surfaceId={activeTab.id}
+                  cwd={activeTab.cwd?.trim() || terminal.cwd?.trim() || undefined}
+                  command={buildGhosttyCommand(activeTab.type, activeTab.extraArgs)}
                   onSpawned={(id) => {
                     if (activeTab.ptyId !== id) {
                       setSubTabPtyId(projectId, terminal.id, activeTab.id, id)
