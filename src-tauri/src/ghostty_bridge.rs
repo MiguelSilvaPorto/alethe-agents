@@ -295,8 +295,7 @@ mod imp {
                         if let Ok(Some(screen)) = rx.recv() {
                             let last: String = screen
                                 .lines()
-                                .filter(|l| !l.trim().is_empty())
-                                .last()
+                                .rfind(|l| !l.trim().is_empty())
                                 .unwrap_or("(vazio)")
                                 .to_string();
                             eprintln!("[alethe-ghostty] WATCH última-linha: {last}");
@@ -1038,7 +1037,7 @@ pub fn ghostty_debug_send_read(
 ) -> Result<String, String> {
     #[cfg(all(target_os = "macos", ghostty_linked))]
     {
-        return imp::debug_send_read(&state, id, text);
+        imp::debug_send_read(&state, id, text)
     }
     #[cfg(not(all(target_os = "macos", ghostty_linked)))]
     {
