@@ -1,5 +1,11 @@
 use serde::Serialize;
 
+/// Cliente HTTP compartilhado — reusa o pool de conexões entre chamadas.
+fn http_client() -> &'static reqwest::Client {
+    static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+    CLIENT.get_or_init(reqwest::Client::new)
+}
+
 #[derive(Debug, Serialize, Clone)]
 pub struct UsageWindow {
     pub utilization: f64,
@@ -75,7 +81,7 @@ fn discover_token() -> Option<String> {
 pub async fn get_claude_usage() -> Result<ClaudeUsage, String> {
     let token = discover_token().ok_or_else(|| "no_token".to_string())?;
 
-    let client = reqwest::Client::new();
+    let client = http_client();
     let resp = client
         .get("https://api.anthropic.com/api/oauth/usage")
         .header("Authorization", format!("Bearer {}", token))

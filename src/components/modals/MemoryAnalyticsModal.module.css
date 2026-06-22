@@ -70,6 +70,20 @@
   margin-bottom: 10px;
 }
 
+/* Painel de saída suja (sessão anterior caiu/foi morta) — destaque de alerta. */
+.crashPanel {
+  border-color: var(--status-offline);
+  background: color-mix(in srgb, var(--status-offline) 8%, transparent);
+}
+
+.crashPanel svg {
+  color: var(--status-offline);
+}
+
+.crashActions {
+  display: flex;
+}
+
 .panelHeader h3 {
   margin: 0;
   color: var(--fg);

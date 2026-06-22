@@ -95,33 +95,10 @@
   opacity: 0;
 }
 
-.empty {
+.emptyShell {
   height: 100%;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 12px;
-  color: var(--fg-muted);
-  font-size: 13px;
-  text-align: center;
-}
-
-.dim {
-  color: var(--fg-faint);
-  font-size: 12px;
-  margin: 0;
-}
-
-.cta {
-  padding: 8px 16px;
-  background: var(--accent);
-  color: var(--accent-on);
-  border-radius: var(--radius-md);
-  font-size: 13px;
-  font-weight: 500;
-  cursor: pointer;
-}
-.cta:hover {
-  background: var(--accent-strong);
+  display: grid;
+  place-items: center;
+  padding: 18px;
+  min-height: 0;
 }

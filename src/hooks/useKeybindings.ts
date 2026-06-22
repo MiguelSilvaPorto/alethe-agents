@@ -124,7 +124,16 @@ export function useKeybindings() {
         const idx = Number(e.key) - 1
         const projects = useProjectsStore.getState()
         const target = projects.projects[idx]
-        if (target) projects.setActiveProject(target.id)
+        if (target) projects.openProjectWorkspace(target.id)
+        return
+      }
+
+      // Alt+Left / Alt+Right → histórico persistente da workspace.
+      if (e.altKey && !ctrl && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) {
+        e.preventDefault()
+        const projects = useProjectsStore.getState()
+        projects.navigateWorkspaceHistory(e.key === 'ArrowLeft' ? -1 : 1)
+        useUiStore.getState().setActiveView('workspace')
         return
       }
 
@@ -133,43 +142,16 @@ export function useKeybindings() {
         e.preventDefault()
         const projects = useProjectsStore.getState()
         const ui = useUiStore.getState()
-        const existingProjectIds = new Set(projects.projects.map((p) => p.id))
-        const existingGroupIds = new Set(projects.groups.map((g) => g.id))
-        const topTabs = (projects.workspace.recentTabs ?? [])
-          .filter((tab) =>
-            tab.kind === 'group'
-              ? existingGroupIds.has(tab.id)
-              : existingProjectIds.has(tab.id),
-          )
-          .slice(0, MAX_RECENT_PROJECT_TABS)
-        const fallbackTabs =
-          topTabs.length > 0
-            ? topTabs
-            : projects.workspace.containers
-                .map((c) => c.projectId)
-                .filter((id) => existingProjectIds.has(id))
-                .map((id) => ({ kind: 'project' as const, id }))
-                .slice(0, MAX_RECENT_PROJECT_TABS)
-        if (fallbackTabs.length < 2) return
-
-        const currentIndex = fallbackTabs.findIndex((tab) =>
-          ui.activeGroupTabId
-            ? tab.kind === 'group' && tab.id === ui.activeGroupTabId
-            : tab.kind === 'project' && tab.id === projects.activeProjectId,
-        )
+        const topTabs = projects.workspace.tabs.slice(0, MAX_RECENT_PROJECT_TABS)
+        if (topTabs.length < 2) return
+        const currentIndex = topTabs.findIndex((tab) => tab.id === projects.workspace.activeTabId)
         const direction = e.shiftKey ? -1 : 1
         const nextIndex =
           currentIndex === -1
             ? 0
-            : (currentIndex + direction + fallbackTabs.length) % fallbackTabs.length
-        const nextTab = fallbackTabs[nextIndex]
-        if (nextTab.kind === 'group') {
-          projects.openGroupScope(nextTab.id)
-          ui.setActiveGroupTab(nextTab.id)
-        } else {
-          projects.setActiveProject(nextTab.id)
-          ui.setActiveGroupTab(null)
-        }
+            : (currentIndex + direction + topTabs.length) % topTabs.length
+        const nextTab = topTabs[nextIndex]
+        projects.activateWorkspaceTab(nextTab.id)
         ui.setActiveView('workspace')
         return
       }

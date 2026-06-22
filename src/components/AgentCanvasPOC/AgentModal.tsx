@@ -1,8 +1,10 @@
 import { X } from 'lucide-react'
 import { useEffect } from 'react'
 
+import { fmtTokens, fmtUsd, shortModel } from '../../lib/costFormat'
 import { useT, intlLocale } from '../../lib/i18n'
 import { useAgentCanvasStore } from '../../stores/agentCanvasStore'
+import { useNodeCostStore } from '../../stores/nodeCostStore'
 import { useProjectsStore } from '../../stores/projectsStore'
 import styles from './AgentCanvasPOC.module.css'
 
@@ -13,6 +15,7 @@ export function AgentModal() {
   const node = useAgentCanvasStore((s) =>
     s.selectedId ? s.nodes.find((n) => n.id === s.selectedId) ?? null : null,
   )
+  const cost = useNodeCostStore((s) => (node ? (s.byNodeId[node.id] ?? null) : null))
   const select = useAgentCanvasStore((s) => s.select)
 
   useEffect(() => {
@@ -85,6 +88,33 @@ export function AgentModal() {
           <div className={styles.modalSection}>
             <div className={styles.modalSectionTitle}>{t('ws.result')}</div>
             <div className={styles.modalResult}>{node.result}</div>
+          </div>
+        ) : null}
+
+        {cost && cost.by_model.length > 0 ? (
+          <div className={styles.modalSection}>
+            <div className={styles.modalSectionTitle}>
+              {t('ws.costBreakdown', {
+                usd: cost.cost_usd != null ? fmtUsd(cost.cost_usd) : '—',
+                tokens: fmtTokens(cost.total_tokens),
+              })}
+            </div>
+            <div className={styles.modalCostList}>
+              {cost.by_model.map((m) => (
+                <div key={m.model} className={styles.modalCostRow}>
+                  <span className={styles.cardCostModel}>{shortModel(m.model) ?? m.model}</span>
+                  <span className={styles.feedSummary}>
+                    {fmtTokens(
+                      m.input + m.output + m.cache_read + m.cache_write_5m + m.cache_write_1h,
+                    )}{' '}
+                    {t('ws.tokens')}
+                  </span>
+                  <span className={styles.cardCostUsd}>
+                    {m.cost_usd != null ? fmtUsd(m.cost_usd) : t('hud.noCost')}
+                  </span>
+                </div>
+              ))}
+            </div>
           </div>
         ) : null}
 

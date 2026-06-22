@@ -36,6 +36,10 @@ pub fn projects_file_path(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(profile_data_dir(app)?.join("projects.json"))
 }
 
+pub fn activity_stats_file_path(app: &AppHandle) -> Result<PathBuf, String> {
+    Ok(profile_data_dir(app)?.join("activity-stats.json"))
+}
+
 pub fn spawn_log_path(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(profile_data_dir(app)?.join("spawn.log"))
 }

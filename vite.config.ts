@@ -7,6 +7,12 @@ export default defineConfig({
   server: {
     port: 1422,
     strictPort: true,
+    // Não vigie o backend Rust: o watcher do vite tenta observar
+    // src-tauri/target/**/*.dll enquanto o linker ainda está escrevendo o
+    // arquivo e estoura EBUSY, derrubando o dev server a cada rebuild do Rust.
+    watch: {
+      ignored: ['**/src-tauri/**'],
+    },
   },
   build: {
     sourcemap: false,

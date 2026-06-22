@@ -16,6 +16,8 @@ export type AgentCompletionMonitorOptions = {
   cwd?: string | null
   onStatusChange?: (status: 'working' | 'waiting') => void
   onComplete?: () => void
+  /** O rastreador global reutiliza a heurística sem duplicar notificações da UI. */
+  notifyOnComplete?: boolean
 }
 
 export class AgentCompletionMonitor {
@@ -90,11 +92,13 @@ export class AgentCompletionMonitor {
       this.state = 'idle'
       this.options.onStatusChange?.('waiting')
       this.options.onComplete?.()
-      void notifyAgentDone(
-        translate(getLocale(), 'notif.agentDoneTitle', { agent: agentLabel(this.options.agent) }),
-        buildNotificationBody(this.options),
-        { agent: this.options.agent },
-      )
+      if (this.options.notifyOnComplete !== false) {
+        void notifyAgentDone(
+          translate(getLocale(), 'notif.agentDoneTitle', { agent: agentLabel(this.options.agent) }),
+          buildNotificationBody(this.options),
+          { agent: this.options.agent },
+        )
+      }
     }, RESPONSE_IDLE_MS)
   }
 

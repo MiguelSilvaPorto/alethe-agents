@@ -8,10 +8,25 @@
  *   try { await spawnPty(...) } finally { releaseSpawnSlot() }
  */
 
-const MAX_CONCURRENT_SPAWNS = 3
+let maxConcurrentSpawns = 3
 
 let active = 0
 const waiters: Array<() => void> = []
+
+/**
+ * Ajusta o limite de spawns simultâneos (preferência do usuário). Ao aumentar,
+ * libera waiters presos até o novo teto; ao diminuir, só vale pros próximos.
+ */
+export function setMaxConcurrentSpawns(n: number): void {
+  const next = Math.max(1, Math.round(n))
+  if (next === maxConcurrentSpawns) return
+  maxConcurrentSpawns = next
+  while (active < maxConcurrentSpawns && waiters.length > 0) {
+    const resume = waiters.shift()
+    if (resume) resume()
+  }
+  notify()
+}
 
 type Listener = (snapshot: { active: number; queued: number }) => void
 const listeners = new Set<Listener>()
@@ -32,7 +47,7 @@ export function getSpawnQueueSnapshot(): { active: number; queued: number } {
 }
 
 export function acquireSpawnSlot(): Promise<void> {
-  if (active < MAX_CONCURRENT_SPAWNS) {
+  if (active < maxConcurrentSpawns) {
     active++
     notify()
     return Promise.resolve()
@@ -49,7 +64,8 @@ export function acquireSpawnSlot(): Promise<void> {
 
 export function releaseSpawnSlot(): void {
   active = Math.max(0, active - 1)
-  const next = waiters.shift()
+  // Só admite o próximo se ainda houver folga (o cap pode ter sido reduzido).
+  const next = active < maxConcurrentSpawns ? waiters.shift() : undefined
   if (next) next()
   else notify()
 }

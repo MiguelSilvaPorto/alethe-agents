@@ -14,7 +14,7 @@ export function NewProjectModal() {
   const context = useUiStore((s) => s.modalContext) as { groupId?: string | null } | null
   const closeModal = useUiStore((s) => s.closeModal)
   const createProject = useProjectsStore((s) => s.createProject)
-  const setActiveProject = useProjectsStore((s) => s.setActiveProject)
+  const openProjectWorkspace = useProjectsStore((s) => s.openProjectWorkspace)
   const groups = useProjectsStore((s) => s.groups)
 
   const [name, setName] = useState('')
@@ -33,7 +33,7 @@ export function NewProjectModal() {
     const trimmed = name.trim()
     if (!trimmed) return
     const project = createProject({ name: trimmed, color, iconUrl: iconUrl.trim() || undefined, groupId })
-    setActiveProject(project.id)
+    openProjectWorkspace(project.id)
     reset()
     closeModal()
   }

@@ -12,6 +12,12 @@
   overflow: hidden;
 }
 
+/* Realce quando um arquivo do SO está sendo arrastado sobre este pane. */
+.dropActive {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
 .host :global(.xterm) {
   width: 100%;
   height: 100%;

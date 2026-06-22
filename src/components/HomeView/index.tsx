@@ -1,4 +1,13 @@
-import { ArrowRight, Bell, Bot, FolderPlus, Layers, TerminalSquare } from 'lucide-react'
+import {
+  ArrowRight,
+  Bell,
+  Bot,
+  CheckCircle2,
+  FolderPlus,
+  Layers,
+  Clock3,
+  TerminalSquare,
+} from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 
 import { pickDirectory } from '../../lib/dialog'
@@ -7,13 +16,23 @@ import { useT, type TFunction } from '../../lib/i18n'
 import { getFirstName, getProfileImageUrl, getProfileInitial } from '../../lib/profile'
 import { useProjectsStore } from '../../stores/projectsStore'
 import { useUiStore } from '../../stores/uiStore'
-import type { Project } from '../../lib/types'
+import type { AgentType, Project } from '../../lib/types'
+import { AgentIcon } from '../icons/AgentIcons'
+import { EmptyState } from '../EmptyState/EmptyState'
 import { NowPlayingWidget } from './NowPlayingWidget'
 import { UsageStrip } from './UsageStrip'
+import { TimeAnalytics } from './TimeAnalytics'
 import styles from './HomeView.module.css'
 
 const RECENT_PROJECTS_LIMIT = 6
 const NOTIFICATIONS_LIMIT = 5
+
+const NOTIF_AGENT_CLASS: Record<AgentType, string> = {
+  claude: styles.notifClaude,
+  codex: styles.notifCodex,
+  shell: styles.notifShell,
+  opencode: styles.notifOpencode,
+}
 
 export function HomeView() {
   const t = useT()
@@ -121,7 +140,17 @@ export function HomeView() {
             <div className={styles.date}>{dateStr}</div>
           </div>
         </div>
-        <NowPlayingWidget enabled />
+        <div className={styles.headerActions}>
+          <button
+            type="button"
+            className={styles.timeJumpButton}
+            onClick={() => document.getElementById('time-analytics')?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
+          >
+            <Clock3 size={14} />
+            {t('time.open')}
+          </button>
+          <NowPlayingWidget enabled />
+        </div>
       </header>
 
       <button type="button" className={styles.agentHero} onClick={startAgentSession}>
@@ -161,15 +190,25 @@ export function HomeView() {
             ))}
           </div>
         ) : (
-          <div className={styles.emptyState}>
-            {t('home.noProjects')}
-          </div>
+          <EmptyState
+            icon={<FolderPlus size={22} />}
+            title={t('home.projectsEmptyTitle')}
+            description={t('home.projectsEmptyDesc')}
+            primaryAction={{
+              label: t('home.projectsEmptyAction'),
+              onClick: () => openModal('newProject'),
+            }}
+          />
         )}
       </section>
 
       <section className={styles.section}>
         <div className={styles.sectionHeader}>{t('home.usageActivity')}</div>
         <UsageStrip />
+      </section>
+
+      <section id="time-analytics" className={`${styles.section} ${styles.timeAnalyticsSection}`}>
+        <TimeAnalytics />
       </section>
 
       <div className={styles.bottomGrid}>
@@ -193,8 +232,16 @@ export function HomeView() {
             <ul className={styles.notifList}>
               {notifications.slice(0, NOTIFICATIONS_LIMIT).map((n) => (
                 <li key={n.id} className={styles.notifItem}>
-                  <span className={styles.notifIcon}>
-                    <Bell size={13} />
+                  <span
+                    className={`${styles.notifIcon} ${
+                      n.agent ? NOTIF_AGENT_CLASS[n.agent] : styles.notifNeutral
+                    }`}
+                  >
+                    {n.agent ? (
+                      <AgentIcon type={n.agent} size={14} theme={preferences.uiTheme} />
+                    ) : (
+                      <Bell size={13} />
+                    )}
                   </span>
                   <span className={styles.notifBody}>
                     <span className={styles.notifTitle}>{n.title}</span>
@@ -207,7 +254,13 @@ export function HomeView() {
               ))}
             </ul>
           ) : (
-            <div className={styles.emptyState}>{t('home.noNotifications')}</div>
+            <EmptyState
+              compact
+              tone="positive"
+              icon={<CheckCircle2 size={18} />}
+              title={t('home.notificationsEmptyTitle')}
+              description={t('home.notificationsEmptyDesc')}
+            />
           )}
         </section>
 

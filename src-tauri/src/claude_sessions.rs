@@ -37,7 +37,7 @@ fn encode_cwd_for_claude(cwd: &str) -> String {
         .collect()
 }
 
-fn claude_projects_dir() -> Option<PathBuf> {
+pub(crate) fn claude_projects_dir() -> Option<PathBuf> {
     let home = env::var_os("USERPROFILE")
         .or_else(|| env::var_os("HOME"))
         .map(PathBuf::from)?;
@@ -157,7 +157,7 @@ fn matching_project_dirs(root: &PathBuf, encoded: &str) -> Vec<PathBuf> {
         .collect()
 }
 
-fn project_dirs_for_cwd(cwd: &str) -> Result<Vec<PathBuf>, String> {
+pub(crate) fn project_dirs_for_cwd(cwd: &str) -> Result<Vec<PathBuf>, String> {
     let cwd_trimmed = cwd.trim();
     if cwd_trimmed.is_empty() {
         return Ok(Vec::new());
@@ -259,7 +259,16 @@ pub struct ActivityDay {
 /// Retorna `days` dias contínuos terminando hoje (UTC), ordenados do mais
 /// antigo pro mais recente. Dias sem atividade têm count=0.
 #[tauri::command]
-pub fn get_claude_activity(days: usize) -> Result<Vec<ActivityDay>, String> {
+pub async fn get_claude_activity(days: usize) -> Result<Vec<ActivityDay>, String> {
+    // Varredura pesada das sessões → roda em spawn_blocking pra NÃO travar a
+    // thread principal do Tauri (comando sync bloqueia a UI inteira enquanto lê
+    // os arquivos; com muitas sessões isso "congela" a Home ao abrir).
+    tokio::task::spawn_blocking(move || get_claude_activity_inner(days))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+fn get_claude_activity_inner(days: usize) -> Result<Vec<ActivityDay>, String> {
     let days = days.clamp(1, 366);
     let Some(root) = claude_projects_dir() else {
         return Ok(empty_activity_window(days));

@@ -1,6 +1,8 @@
-import { Activity, AlertTriangle, Cpu, Layers, Monitor, TerminalSquare, Trash2 } from 'lucide-react'
+import { Activity, AlertTriangle, Cpu, FolderOpen, Layers, Monitor, TerminalSquare, Trash2 } from 'lucide-react'
+import { useEffect, useState } from 'react'
 
 import { intlLocale, useT, type Locale, type TFunction } from '../../lib/i18n'
+import { getLastCrashReport, openLogsFolder, type CrashReport } from '../../lib/tauri'
 import { useProjectsStore } from '../../stores/projectsStore'
 import type { MemorySample } from '../../stores/uiStore'
 import { useUiStore } from '../../stores/uiStore'
@@ -159,6 +161,14 @@ export function MemoryAnalyticsModal() {
   const history = useUiStore((s) => s.memoryHistory)
   const clearMemoryHistory = useUiStore((s) => s.clearMemoryHistory)
 
+  // Relatório da sessão anterior, se ela caiu/foi morta (saída suja).
+  const [crash, setCrash] = useState<CrashReport | null>(null)
+  useEffect(() => {
+    void getLastCrashReport()
+      .then(setCrash)
+      .catch(() => {})
+  }, [])
+
   const latest = history[history.length - 1] ?? null
   const peak = history.reduce<MemorySample | null>(
     (current, sample) => (!current || sample.total_mb > current.total_mb ? sample : current),
@@ -186,6 +196,35 @@ export function MemoryAnalyticsModal() {
       }
     >
       <div className={styles.layout}>
+        {crash ? (
+          <section className={`${styles.panel} ${styles.crashPanel}`}>
+            <div className={styles.panelHeader}>
+              <div>
+                <h3>{t('mod.lastSessionCrashTitle')}</h3>
+                <p>
+                  {t('mod.lastSessionCrashSubtitle', {
+                    total: Math.round(crash.total_mb),
+                    ptys: Math.round(crash.ptys_mb),
+                    procs: crash.process_count,
+                    time: formatTime(crash.last_heartbeat_ms || crash.started_at_ms, language),
+                  })}
+                </p>
+              </div>
+              <AlertTriangle size={16} />
+            </div>
+            <div className={styles.crashActions}>
+              <button
+                type="button"
+                className={controls.btn}
+                onClick={() => void openLogsFolder().catch(() => {})}
+              >
+                <FolderOpen size={14} />
+                {t('mod.openLogs')}
+              </button>
+            </div>
+          </section>
+        ) : null}
+
         <section className={styles.summaryGrid}>
           <div className={styles.metric}>
             <Activity size={16} />

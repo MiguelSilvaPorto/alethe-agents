@@ -14,6 +14,8 @@ import {
   ArrowLeft,
   Bot,
   ClipboardCopy,
+  Coins,
+  Frame,
   Grip,
   LayoutTemplate,
   Library,
@@ -31,7 +33,10 @@ import {
   Trash2,
   UserPlus,
   Users,
+  Wallet,
   X,
+  ZoomIn,
+  ZoomOut,
   type LucideIcon,
 } from 'lucide-react'
 import {
@@ -46,25 +51,36 @@ import {
 
 import { AGENT_LIBRARY, type AgentTemplate } from '../../lib/agentLibrary'
 import { getCachedClaudeUsage } from '../../lib/claudeUsageCache'
+import { getCachedCodexUsage } from '../../lib/codexUsageCache'
+import { costLevel, fmtTokens, fmtUsd, shortModel } from '../../lib/costFormat'
 import { useT } from '../../lib/i18n'
 import {
+  attachPty,
+  getModelPricing,
   killPty,
   listenPtyExit,
   spawnPty,
   writeClipboardText,
   writePty,
   type ClaudeUsage,
+  type CodexUsage,
+  type ModelRate,
+  type SessionCost,
 } from '../../lib/tauri'
+import { useAgentCostStore } from '../../stores/agentCostStore'
 import {
   useAgentCanvasStore,
   type AgentHookPayload,
   type AgentNode,
 } from '../../stores/agentCanvasStore'
+import { useNodeCostStore, selectNodeCostTotals } from '../../stores/nodeCostStore'
 import { useProjectsStore } from '../../stores/projectsStore'
 import { useUiStore } from '../../stores/uiStore'
-import { CodexIcon } from '../icons/AgentIcons'
+import type { AgentType } from '../../lib/types'
+import { AgentIcon, CodexIcon } from '../icons/AgentIcons'
 import { XTermView } from '../XTermView'
 import { AgentModal } from './AgentModal'
+import { UsageDropdown, type UsageTab } from './UsageDropdown'
 import styles from './AgentCanvasPOC.module.css'
 
 /**
@@ -103,6 +119,21 @@ const PTY_ENV = {
 const USAGE_FALLBACK_THRESHOLD = 80
 /** De quanto em quanto tempo o canvas relê o usage do Claude. */
 const USAGE_POLL_MS = 60_000
+/** De quanto em quanto tempo o canvas relê o custo dos nós + do lead. */
+const COST_POLL_MS = 4_000
+
+/** Limites de zoom do stage (árvore de agentes). */
+const ZOOM_MIN = 0.4
+const ZOOM_MAX = 1.4
+const ZOOM_STEP = 0.1
+
+/**
+ * Teto de workers REAIS vivos ao mesmo tempo. Cada worker é um processo pesado
+ * (um `claude -p` come ~400 MB; codex é bem mais leve) — sem teto, um lead
+ * autônomo spawna dezenas e estoura a RAM até o app cair. Spawns acima disso
+ * são recusados; o lead deve preferir subagents in-process.
+ */
+const MAX_LIVE_WORKERS = 3
 
 function formatReset(resetsAt: string, nowLabel = 'agora'): string {
   if (!resetsAt) return '—'
@@ -122,14 +153,20 @@ function formatReset(resetsAt: string, nowLabel = 'agora'): string {
 // IMPORTANTE: string de UMA linha, sem aspas duplas, backticks ou apóstrofos.
 // Ela é passada como arg via PowerShell -> claude.cmd (batch) no Windows;
 // aspas/backticks/newlines quebram o parsing do batch e o launcher falha.
-function orchestrationRules(agentEndpoint: string) {
+function orchestrationRules(agentEndpoint: string, budgetUsd?: number | null) {
+  const budget =
+    budgetUsd && budgetUsd > 0
+      ? ` Budget ceiling for this session is about ${budgetUsd} US dollars; prefer cheap routing and pause to ask the user before exceeding it.`
+      : ''
   return (
-  'You are the control plane of an Alethe agent canvas session. Orchestration rules: ' +
-  '(1) Work solo for small tasks; spawning agents has overhead. ' +
-  '(2) Delegate focused self-contained work to subagents when only the result matters; keep your context lean. ' +
-  '(3) If cheap workers exist in .claude/agents, route accordingly: haiku-resumidor for bulk reading and summarizing, haiku-mecanico for well-specified mechanical edits, codex-executor for long noisy execution; never route architecture or ambiguous work to cheap workers. ' +
-  '(4) Create an agent team only for large multi-front work where workers must coordinate (parallel epics, front plus back); give each teammate distinct paths so two never edit the same file, put full context in the spawn prompt, break work into tasks with dependencies, and wait for your teammates instead of implementing yourself. ' +
-  `(5) You control a persistent codex terminal worker in the canvas. To offload heavy or long execution work, send the task to the local endpoint ${agentEndpoint}/codex with an HTTP POST whose body is the task as one self-contained English instruction (use curl -s -X POST with the -d flag). It runs in the codex terminal worker and the user can open it. It is fire and forget: you do not get the output back, so use it for offloadable work, not for results you must read. Prefer this when Claude usage is high.`
+  'You are the autonomous control plane and brain of an Alethe agent canvas session. The user gives you a high level goal in this terminal and you drive it to done by distributing the work across AIs, watching their results, and deciding each next action yourself. Work autonomously but with checkpoints. Rules: ' +
+  '(1) For a small task just do it solo; spawning agents has overhead. ' +
+  '(2) For a large goal such as building a feature or a small app, FIRST consult the orchestrator agent if it exists (Agent tool, subagent_type orchestrator) to get a plan: parallel streams for front, back, qa and docs, plus a task list with dependencies and a suggested agent per task; if no orchestrator agent is available, draft that plan yourself. Present the plan to the user and wait for approval before executing. ' +
+  '(3) After approval, create a SMALL agent team (2 to 4 teammates, never more) and give each teammate distinct file paths so two never edit the same file; put full context in each spawn prompt; break the work into tasks with dependencies; then coordinate and wait for your teammates instead of implementing everything yourself. ' +
+  '(4) Route by cost: if cheap workers exist in .claude/agents, use haiku-resumidor for bulk reading and summarizing, haiku-mecanico for well specified mechanical edits, codex-executor for long noisy execution; keep architecture and ambiguous work on capable models; never route ambiguous work to cheap workers; prefer offloading to a codex worker when Claude usage is high. ' +
+  '(5) Checkpoints: pause and ask the user at big milestones such as the end of an epic, before destructive or irreversible steps, and whenever spending approaches the budget ceiling; never exceed the ceiling without asking. Integrate the streams and run qa before declaring done. ' +
+  `(6) Real workers are EXPENSIVE: each spawn is a full separate process using hundreds of megabytes of RAM, so prefer in-process subagents and teammates for almost everything, spawn AT MOST two real workers at a time, reuse them instead of respawning, and prefer a codex worker over a claude worker because codex is far lighter. To spawn one, POST JSON to ${agentEndpoint}/spawn with body {agent, task, mode}: agent is claude, codex or opencode; task is one self contained English instruction; mode is exec for one shot fire and forget or interactive. Use curl -s -X POST with the -d flag and single quoted JSON. It is fire and forget: you do not get the output back, so use it only for offloadable work, not results you must read.` +
+  budget
   )
 }
 
@@ -158,22 +195,61 @@ function durationLabel(node: { startedAt: number; endedAt: number | null }): str
 type Edge = { id: string; x1: number; y1: number; x2: number; y2: number; done: boolean }
 
 /**
- * Codex worker = um PTY REAL rodando `codex` na pasta da sessão, gerenciado
- * pelo Alethe (≠ do subagent Haiku `codex-executor` da Fase 3, que vive dentro
- * do Claude). Tem card próprio no canvas e abre o terminal completo quando
- * expandido. O PTY é spawnado pelo XTermView na 1ª montagem e sobrevive ao
- * colapso (desmontar não mata; só killPty mata) — reabrir re-attacha o
- * scrollback.
+ * Agent worker = um PTY REAL (claude/codex/opencode) rodando na pasta da sessão,
+ * gerenciado pelo Alethe (≠ do subagent in-process do Claude). Tem card próprio
+ * no canvas e abre o terminal completo quando expandido. O PTY é spawnado pelo
+ * XTermView na 1ª montagem e sobrevive ao colapso (desmontar não mata; só
+ * killPty mata) — reabrir re-attacha o scrollback. Despachado pelo control plane
+ * via POST /spawn (ou /codex legado).
  */
 type CodexWorker = {
   ptyId: string
+  /** Agente do processo (claude | codex | opencode). */
+  agent: AgentType
   /** Tarefa/origem do worker (ex.: "fallback de usage"). */
   title: string
   cwd: string
   startedAt: number
   exitedCode: number | null
-  /** extraArgs do codex: ['exec','--skip-git-repo-check', task] no despacho; undefined no interativo. */
+  /** extraArgs one-shot do agente; undefined no modo interativo. */
   args?: string[]
+  /** Resumo (cauda do scrollback) do que o worker terminou — fecha o loop fire-and-forget. */
+  result?: string
+}
+
+/**
+ * Cauda limpa do scrollback de um worker, pra resumir o resultado no card.
+ * Tira sequências ANSI/OSC e bytes de controle, colapsa espaços e pega o fim.
+ */
+function tailSummary(raw: string, max = 320): string {
+  const clean = raw
+    // CSI: ESC [ ... letra final
+    .replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '')
+    // OSC: ESC ] ... (BEL ou ESC backslash)
+    .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '')
+    // outros escapes ESC de 1 char
+    .replace(/\x1b[@-Z\\-_]/g, '')
+    // bytes de controle restantes (preserva \n e \t)
+    .replace(/[\x00-\x08\x0b-\x1f\x7f]/g, '')
+    .replace(/[^\S\n]+/g, ' ')
+    .replace(/\n{2,}/g, '\n')
+    .trim()
+  return clean.length > max ? `…${clean.slice(-max)}` : clean
+}
+
+/** Monta os extraArgs one-shot por agente pra rodar uma task sem depender da TUI. */
+function execArgsFor(agent: AgentType, task: string): string[] | undefined {
+  switch (agent) {
+    case 'codex':
+      return ['exec', '--skip-git-repo-check', task]
+    case 'claude':
+      // headless: -p roda a task e sai; sem permissões pra não travar no prompt.
+      return ['-p', task, '--dangerously-skip-permissions']
+    case 'opencode':
+      return ['run', task]
+    default:
+      return undefined
+  }
 }
 
 function statusBadgeClass(status: AgentNode['status']): string {
@@ -182,8 +258,60 @@ function statusBadgeClass(status: AgentNode['status']): string {
   return styles.statusDone
 }
 
+/** Faixa de gasto (USD) → classe de cor do canvas (tokens do tema). */
+function costClassFor(usd: number): string {
+  const level = costLevel(usd)
+  if (level === 'high') return styles.costHigh
+  if (level === 'mid') return styles.costMid
+  return styles.costLow
+}
+
+/** Ordem de custo das famílias — pra saber quando um nó foi mais barato que o lead. */
+const FAMILY_RANK: Record<string, number> = { haiku: 1, sonnet: 2, opus: 3 }
+
+/** Custo hipotético de um nó se tivesse rodado num modelo (rate) diferente. */
+function costAtRate(c: SessionCost, rate: ModelRate): number {
+  return (
+    (c.input * rate.input +
+      c.output * rate.output +
+      c.cache_read * rate.cache_read +
+      c.cache_write_5m * rate.cache_write_5m +
+      c.cache_write_1h * rate.cache_write_1h) /
+    1_000_000
+  )
+}
+
+/**
+ * Economia estimada (USD) por ter roteado nós pra modelos mais baratos que o
+ * lead: para cada nó com custo conhecido e família mais barata, soma
+ * (custo no modelo do lead − custo real). Estimativa honesta, baseada em tokens
+ * reais — não conta nós sem preço (codex) nem os no mesmo nível do lead.
+ */
+function estimateRoutingSavings(
+  nodeCosts: Record<string, SessionCost>,
+  leadModel: string | null,
+  pricing: ModelRate[],
+): number {
+  const leadFamily = shortModel(leadModel)
+  if (!leadFamily) return 0
+  const leadRate = pricing.find((r) => r.family === leadFamily) ?? null
+  const leadRank = FAMILY_RANK[leadFamily] ?? 0
+  if (!leadRate || leadRank === 0) return 0
+  let saved = 0
+  for (const c of Object.values(nodeCosts)) {
+    if (c.cost_usd == null) continue
+    const fam = shortModel(c.model)
+    const rank = fam ? (FAMILY_RANK[fam] ?? 0) : 0
+    if (rank === 0 || rank >= leadRank) continue
+    const delta = costAtRate(c, leadRate) - c.cost_usd
+    if (delta > 0) saved += delta
+  }
+  return saved
+}
+
 function personaIconFor(agentName: string): LucideIcon {
   const name = agentName.toLowerCase()
+  if (name.includes('orchestr') || name.includes('tech-lead')) return LayoutTemplate
   if (name.includes('frontend')) return Paintbrush
   if (name.includes('backend')) return Server
   if (name.includes('qa') || name.includes('review')) return ShieldCheck
@@ -192,6 +320,13 @@ function personaIconFor(agentName: string): LucideIcon {
   if (name.includes('plan')) return LayoutTemplate
   return Bot
 }
+
+/**
+ * Time-base que o cérebro precisa na pasta pra orquestrar de verdade: o planner
+ * (orchestrator) + os papéis front/back/qa/docs. Auto-instalados ao abrir a
+ * sessão (best-effort; nunca sobrescreve agent externo de mesmo nome).
+ */
+const CORE_AGENTS = ['orchestrator', 'frontend-dev', 'backend-dev', 'qa-reviewer', 'docs-writer']
 
 type AgentChipProps = {
   name: string
@@ -333,12 +468,22 @@ function AgentCanvasInner() {
   const terminalTheme = useProjectsStore(
     (s) => s.preferences.terminalTheme ?? s.preferences.uiTheme,
   )
+  const uiTheme = useProjectsStore((s) => s.preferences.uiTheme)
   const nodes = useAgentCanvasStore((s) => s.nodes)
   const tasks = useAgentCanvasStore((s) => s.tasks)
   const teamName = useAgentCanvasStore((s) => s.teamName)
   const lastEventAt = useAgentCanvasStore((s) => s.lastEventAt)
   const select = useAgentCanvasStore((s) => s.select)
   const clearStore = useAgentCanvasStore((s) => s.clear)
+
+  // Custo por nó (subagents/teammates) + custo do lead (sessão viva no agentCost).
+  const nodeCosts = useNodeCostStore((s) => s.byNodeId)
+  const leadCost = useAgentCostStore((s) =>
+    session ? (s.byPtyId[session.ptyId]?.cost ?? null) : null,
+  )
+  const budgetUsd = useUiStore((s) => s.agentCanvasBudgetUsd)
+  const setBudget = useUiStore((s) => s.setAgentCanvasBudget)
+  const [pricing, setPricing] = useState<ModelRate[]>([])
 
   const [edges, setEdges] = useState<Edge[]>([])
   const [hooksSettingsPath, setHooksSettingsPath] = useState<string | null>(null)
@@ -348,6 +493,12 @@ function AgentCanvasInner() {
   const [economyOn, setEconomyOn] = useState(false)
   const [restartHint, setRestartHint] = useState(false)
   const [installed, setInstalled] = useState<InstalledAgent[]>([])
+  const [coreAgentsReady, setCoreAgentsReady] = useState(false)
+  const [zoom, setZoom] = useState(1)
+  const [pan, setPan] = useState({ x: 0, y: 0 })
+  const [panning, setPanning] = useState(false)
+  // Origem do arrasto de pan: posição do mouse + pan no início do gesto.
+  const panStartRef = useRef<{ mx: number; my: number; px: number; py: number } | null>(null)
   const [paletteOpen, setPaletteOpen] = useState(false)
   const [palettePosition, setPalettePosition] = useState({ x: 16, y: 58 })
 
@@ -355,6 +506,9 @@ function AgentCanvasInner() {
   const [codexWorkers, setCodexWorkers] = useState<CodexWorker[]>([])
   const [expandedCodexId, setExpandedCodexId] = useState<string | null>(null)
   const [usage, setUsage] = useState<ClaudeUsage | null>(null)
+  const [codexUsage, setCodexUsage] = useState<CodexUsage | null>(null)
+  const [usageOpen, setUsageOpen] = useState(false)
+  const [usageTab, setUsageTab] = useState<UsageTab>('claude')
   const [fallbackActive, setFallbackActive] = useState(false)
   const fallbackActiveRef = useRef(false)
   const leadNotifiedRef = useRef(false)
@@ -374,8 +528,11 @@ function AgentCanvasInner() {
   })
 
   const containerRef = useRef<HTMLDivElement | null>(null)
+  const stageRef = useRef<HTMLDivElement | null>(null)
+  const usageAnchorRef = useRef<HTMLDivElement | null>(null)
   const planeRef = useRef<HTMLDivElement | null>(null)
   const cardRefs = useRef(new Map<string, HTMLDivElement>())
+  const taskRefs = useRef(new Map<string, HTMLDivElement>())
 
   const startPaletteDrag = (event: ReactPointerEvent<HTMLElement>) => {
     if (event.button !== 0) return
@@ -402,74 +559,110 @@ function AgentCanvasInner() {
     window.addEventListener('pointercancel', onEnd)
   }
 
-  // Cria um codex worker. O PTY sobe JÁ em background (sem abrir o terminal);
-  // o usuário abre quando quiser (opts.open). Se opts.task vier, roda
-  // `codex exec "<task>"` — a tarefa vai como ARGUMENTO (determinístico, não
-  // depende de digitar na TUI); senão, `codex` interativo pro usuário mexer.
-  const spawnCodexWorker = useCallback(
-    (title: string, opts: { open?: boolean; task?: string } = {}): string | null => {
+  // Cria um worker REAL de um agente (claude/codex/opencode). O PTY sobe JÁ em
+  // background (sem abrir o terminal); o usuário abre quando quiser (opts.open).
+  // Se opts.task vier, roda one-shot via execArgsFor (determinístico, não depende
+  // da TUI); senão, agente interativo pro usuário mexer.
+  const spawnAgentWorker = useCallback(
+    (
+      agent: AgentType,
+      title: string,
+      opts: { open?: boolean; task?: string } = {},
+    ): string | null => {
       const folder = sessionRef.current?.folder
       if (!folder) return null
-      const ptyId = `codex-worker-${Date.now()}`
-      const args = opts.task ? ['exec', '--skip-git-repo-check', opts.task] : undefined
-      console.log('[AgentCanvasPOC] criando codex worker', ptyId, '· task=', !!opts.task, '·', title)
+      const ptyId = `${agent}-worker-${Date.now()}`
+      const args = opts.task ? execArgsFor(agent, opts.task) : undefined
+      console.log('[AgentCanvasPOC] criando worker', agent, ptyId, '· task=', !!opts.task, '·', title)
       setCodexWorkers((prev) => [
         ...prev,
-        { ptyId, title, cwd: folder, startedAt: Date.now(), exitedCode: null, args },
+        { ptyId, agent, title, cwd: folder, startedAt: Date.now(), exitedCode: null, args },
       ])
-      void spawnPty({ cols: 120, rows: 30, id: ptyId, command: 'codex', cwd: folder, extraArgs: args })
+      void spawnPty({ cols: 120, rows: 30, id: ptyId, command: agent, cwd: folder, extraArgs: args })
         .then(() => {
           // Captura o término mesmo com o terminal fechado — senão o card de um
-          // `codex exec` (one-shot) ficaria "running" pra sempre.
+          // one-shot ficaria "running" pra sempre.
           void listenPtyExit(ptyId, (code) => {
-            console.log('[AgentCanvasPOC] codex worker', ptyId, 'saiu, code', code)
+            console.log('[AgentCanvasPOC] worker', ptyId, 'saiu, code', code)
             setCodexWorkers((prev) =>
               prev.map((w) => (w.ptyId === ptyId ? { ...w, exitedCode: code ?? 0 } : w)),
             )
+            // Fecha o loop fire-and-forget: puxa a cauda do scrollback como
+            // resumo do que o worker terminou fazendo, pra aparecer no card.
+            void attachPty(ptyId)
+              .then((scrollback) => {
+                const result = tailSummary(scrollback)
+                if (!result) return
+                setCodexWorkers((prev) =>
+                  prev.map((w) => (w.ptyId === ptyId ? { ...w, result } : w)),
+                )
+              })
+              .catch(() => {})
           })
         })
-        .catch((err) => console.error('[AgentCanvasPOC] falha spawnando codex PTY:', err))
+        .catch((err) => console.error('[AgentCanvasPOC] falha spawnando PTY do worker:', err))
       if (opts.open) setExpandedCodexId(ptyId)
       return ptyId
     },
     [],
   )
 
+  // Atalho legado pros botões manuais (worker codex interativo).
+  const spawnCodexWorker = useCallback(
+    (title: string, opts: { open?: boolean; task?: string } = {}): string | null =>
+      spawnAgentWorker('codex', title, opts),
+    [spawnAgentWorker],
+  )
+
   const killCodexWorker = useCallback((ptyId: string) => {
-    console.log('[AgentCanvasPOC] matando codex worker', ptyId)
+    console.log('[AgentCanvasPOC] matando worker', ptyId)
     void killPty(ptyId).catch(() => {})
     setCodexWorkers((prev) => prev.filter((w) => w.ptyId !== ptyId))
     setExpandedCodexId((cur) => (cur === ptyId ? null : cur))
   }, [])
 
-  // Ponte de controle: tarefa despachada pelo control plane (POST /codex) cria
-  // um codex worker que roda `codex exec "<task>"` — sempre executa (sem
-  // depender de digitar na TUI). Cada despacho = um card. O usuário abre pra
-  // acompanhar; o codex sai quando termina (card vira "exit N").
-  const dispatchToCodex = useCallback(
-    (task: string) => {
-      // O task vem do lead (texto cru) e vira arg de `codex exec` via
-      // PowerShell -> codex.cmd (batch). Aspas duplas e newlines quebram o
-      // batch (mesma causa do bug do control plane) — então sanitiza:
-      // aspas duplas viram simples (o command_builder escapa simples com
-      // segurança) e quebras de linha viram espaço.
-      const safe = task.replace(/"/g, "'").replace(/\s*[\r\n]+\s*/g, ' ').trim()
-      if (!safe) return
-      console.log('[AgentCanvasPOC] despacho do control plane pro codex:', safe.slice(0, 80))
-      spawnCodexWorker(safe.length > 60 ? `${safe.slice(0, 60)}…` : safe, { task: safe })
+  // Ponte de dispatch: o control plane spawna um processo real via POST /spawn
+  // (ou /codex legado). Cada despacho = um card. O usuário abre pra acompanhar;
+  // o worker sai quando termina (card vira "exit N").
+  const dispatchToAgent = useCallback(
+    (payload: { agent?: string; task?: string; mode?: string }) => {
+      const agent = payload.agent as AgentType | undefined
+      if (agent !== 'claude' && agent !== 'codex' && agent !== 'opencode') return
+      const rawTask = payload.task ?? ''
+      // A task vira arg via PowerShell -> *.cmd (batch). Aspas duplas e newlines
+      // quebram o batch — então sanitiza: aspas duplas viram simples (o
+      // command_builder escapa simples com segurança) e newlines viram espaço.
+      const safe = rawTask.replace(/"/g, "'").replace(/\s*[\r\n]+\s*/g, ' ').trim()
+      const interactive = payload.mode === 'interactive' || !safe
+      // Teto de workers vivos: cada um é um processo pesado. Acima disso, recusa
+      // (lê do ref pra não pegar contagem velha do closure) — evita a IA estourar
+      // a RAM spawnando dezenas de claude/codex.
+      const liveWorkers = codexWorkersRef.current.filter((w) => w.exitedCode === null).length
+      if (liveWorkers >= MAX_LIVE_WORKERS) {
+        console.warn('[AgentCanvasPOC] teto de workers vivos atingido, recusando spawn:', agent)
+        useUiStore.getState().pushToast({
+          title: t('ws.workerCapTitle'),
+          body: t('ws.workerCapBody', { max: MAX_LIVE_WORKERS }),
+        })
+        return
+      }
+      console.log('[AgentCanvasPOC] dispatch', agent, interactive ? '(interativo)' : safe.slice(0, 80))
+      const title = safe ? (safe.length > 60 ? `${safe.slice(0, 60)}…` : safe) : agent
+      spawnAgentWorker(agent, title, interactive ? { open: true } : { task: safe })
     },
-    [spawnCodexWorker],
+    [spawnAgentWorker, t],
   )
 
   useEffect(() => {
-    const unlistenPromise = listen<string>('codex-task', (event) => {
-      console.log('[AgentCanvasPOC] codex-task:', String(event.payload).slice(0, 80))
-      dispatchToCodex(String(event.payload))
+    const unlistenPromise = listen('agent-spawn', (event) => {
+      const payload = event.payload as { agent?: string; task?: string; mode?: string }
+      console.log('[AgentCanvasPOC] agent-spawn:', payload?.agent, String(payload?.task ?? '').slice(0, 60))
+      dispatchToAgent(payload)
     })
     return () => {
       void unlistenPromise.then((u) => u())
     }
-  }, [dispatchToCodex])
+  }, [dispatchToAgent])
 
   const refreshInstalled = useCallback(() => {
     if (!session) return
@@ -497,6 +690,13 @@ function AgentCanvasInner() {
       .catch((err) => console.error('[AgentCanvasPOC] falha gerando hooks settings:', err))
   }, [])
 
+  // Tabela de preço (uma vez) pra estimar a economia por roteamento.
+  useEffect(() => {
+    getModelPricing()
+      .then(setPricing)
+      .catch(() => {})
+  }, [])
+
   // Estado inicial: modo economia + agents instalados na pasta.
   useEffect(() => {
     if (!session) return
@@ -504,6 +704,32 @@ function AgentCanvasInner() {
       .then(setEconomyOn)
       .catch(() => {})
     refreshInstalled()
+  }, [session, refreshInstalled])
+
+  // Auto-instala o time-base (CORE_AGENTS) ANTES de spawnar o lead, pra ele já
+  // poder consultar o orchestrator e delegar pra front/back/qa/docs. Best-effort:
+  // conflito com agent externo de mesmo nome é ignorado (allSettled). A sessão do
+  // lead só monta quando isto termina (coreAgentsReady), senão nasceria sem time.
+  useEffect(() => {
+    if (!session) return
+    setCoreAgentsReady(false)
+    const folder = session.folder
+    void Promise.allSettled(
+      CORE_AGENTS.map((name) => {
+        const tpl = AGENT_LIBRARY.find((a) => a.name === name)
+        if (!tpl) return Promise.resolve(null)
+        return invoke('install_agent', {
+          folder,
+          name: tpl.name,
+          content: tpl.content,
+          force: false,
+        })
+      }),
+    ).then(() => {
+      console.log('[AgentCanvasPOC] core agents garantidos na pasta')
+      setCoreAgentsReady(true)
+      refreshInstalled()
+    })
   }, [session, refreshInstalled])
 
   const toggleEconomy = () => {
@@ -652,6 +878,13 @@ function AgentCanvasInner() {
       } catch (err) {
         console.warn('[AgentCanvasPOC] usage indisponível (sem token?):', err)
       }
+      // Codex em separado (pode não estar logado — não derruba o do Claude).
+      try {
+        const cu = await getCachedCodexUsage()
+        if (!cancelled) setCodexUsage(cu)
+      } catch {
+        if (!cancelled) setCodexUsage(null)
+      }
     }
 
     void check()
@@ -661,6 +894,25 @@ function AgentCanvasInner() {
       window.clearInterval(timer)
     }
   }, [session, activateFallback])
+
+  // Fecha o dropdown de uso ao clicar fora ou apertar Esc.
+  useEffect(() => {
+    if (!usageOpen) return
+    const onDown = (e: PointerEvent) => {
+      if (usageAnchorRef.current && !usageAnchorRef.current.contains(e.target as Node)) {
+        setUsageOpen(false)
+      }
+    }
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setUsageOpen(false)
+    }
+    document.addEventListener('pointerdown', onDown)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('pointerdown', onDown)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [usageOpen])
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -685,35 +937,67 @@ function AgentCanvasInner() {
     const recompute = () => {
       const container = containerRef.current
       const plane = planeRef.current
-      if (!container || !plane) return
-      const cRect = container.getBoundingClientRect()
+      const stage = stageRef.current
+      if (!container || !plane || !stage) return
+      // Coordenadas relativas ao STAGE (não ao viewport): o svg vive DENTRO do
+      // stage e escala junto, então as arestas ficam coladas nos cards em
+      // qualquer zoom/scroll. Divide por zoom pra voltar ao espaço não-escalado.
+      const sRect = stage.getBoundingClientRect()
+      const k = zoom || 1
       const pRect = plane.getBoundingClientRect()
-      const x1 = pRect.left + pRect.width / 2 - cRect.left
-      const y1 = pRect.bottom - cRect.top
-      // Tudo que pendura do control plane: nodes (subagents/teammates) +
-      // codex workers. Codex é controlado pelo control plane, então conecta
-      // igual os subagents, com edge.
+      const x1 = (pRect.left + pRect.width / 2 - sRect.left) / k
+      const y1 = (pRect.bottom - sRect.top) / k
+      // Árvore: o lead ramifica em teammates, workers e UMA área por tipo de
+      // subagent (frontend-dev, backend-dev, …). Uma aresta por ramo (grupo),
+      // não por card — assim cresce pra baixo sem virar uma teia.
+      const subs = nodes.filter((n) => n.kind === 'subagent')
+      const groupTypes = [...new Set(subs.map((n) => n.agentType))]
       const targets = [
-        ...nodes.map((n) => ({ id: n.id, done: n.status === 'done' })),
+        ...nodes
+          .filter((n) => n.kind === 'teammate')
+          .map((n) => ({ id: n.id, done: n.status === 'done' })),
         ...codexWorkers.map((w) => ({ id: w.ptyId, done: w.exitedCode !== null })),
+        ...groupTypes.map((type) => ({
+          id: `group:${type}`,
+          done: !subs.some((n) => n.agentType === type && n.status === 'running'),
+        })),
       ]
-      setEdges(
-        targets.flatMap((target) => {
-          const el = cardRefs.current.get(target.id)
-          if (!el) return []
-          const r = el.getBoundingClientRect()
-          return [
-            {
-              id: target.id,
-              x1,
-              y1,
-              x2: r.left + r.width / 2 - cRect.left,
-              y2: r.top - cRect.top,
-              done: target.done,
-            },
-          ]
-        }),
-      )
+      // Camada 1: lead → cada teammate/worker/ramo.
+      const nodeEdges: Edge[] = targets.flatMap((target) => {
+        const el = cardRefs.current.get(target.id)
+        if (!el) return []
+        const r = el.getBoundingClientRect()
+        return [
+          {
+            id: target.id,
+            x1,
+            y1,
+            x2: (r.left + r.width / 2 - sRect.left) / k,
+            y2: (r.top - sRect.top) / k,
+            done: target.done,
+          },
+        ]
+      })
+      // Camada 2 (DAG): cada task pendura do teammate dono (se existir card dele),
+      // senão do lead. É a leitura visual de "distribuiu e está acompanhando".
+      const taskEdges: Edge[] = Object.values(tasks).flatMap((task) => {
+        const taskEl = taskRefs.current.get(task.id)
+        if (!taskEl) return []
+        const tr = taskEl.getBoundingClientRect()
+        const ownerEl = task.owner ? cardRefs.current.get(`teammate:${task.owner}`) : null
+        const srcRect = ownerEl ? ownerEl.getBoundingClientRect() : pRect
+        return [
+          {
+            id: `task:${task.id}`,
+            x1: (srcRect.left + srcRect.width / 2 - sRect.left) / k,
+            y1: (srcRect.bottom - sRect.top) / k,
+            x2: (tr.left + tr.width / 2 - sRect.left) / k,
+            y2: (tr.top - sRect.top) / k,
+            done: task.status === 'completed',
+          },
+        ]
+      })
+      setEdges([...nodeEdges, ...taskEdges])
     }
     recompute()
     // rAF encadeado garante que o recompute roda após o layout estabilizar
@@ -726,6 +1010,7 @@ function AgentCanvasInner() {
       // Observa também cada card — feed crescendo muda a altura sem mexer no
       // array de nodes, e aí os edges ficariam parados.
       cardRefs.current.forEach((el) => observer.observe(el))
+      taskRefs.current.forEach((el) => observer.observe(el))
       container.addEventListener('scroll', recompute, { passive: true })
     }
     return () => {
@@ -733,7 +1018,22 @@ function AgentCanvasInner() {
       observer.disconnect()
       container?.removeEventListener('scroll', recompute)
     }
-  }, [nodes, codexWorkers])
+  }, [nodes, codexWorkers, tasks, zoom])
+
+  // Poll de custo: relê o custo de cada nó (pelo transcript) e o do lead (sessão
+  // viva no agentCostStore). Ambos refresh() são adaptativos — pulam sozinhos
+  // quando não há o que ler. Lê os nodes direto do store pra não re-assinar o
+  // effect a cada mudança de feed.
+  useEffect(() => {
+    if (!session) return
+    const tick = () => {
+      void useNodeCostStore.getState().refresh(useAgentCanvasStore.getState().nodes)
+      void useAgentCostStore.getState().refresh()
+    }
+    tick()
+    const timer = window.setInterval(tick, COST_POLL_MS)
+    return () => window.clearInterval(timer)
+  }, [session])
 
   const exitCanvas = () => {
     if (session) {
@@ -749,6 +1049,8 @@ function AgentCanvasInner() {
     // Estado do canvas não sobrevive entre sessões — senão time/cards velhos
     // (até de testes headless) reaparecem na próxima pasta.
     clearStore()
+    useNodeCostStore.getState().clear()
+    useUiStore.getState().setAgentCanvasBudget(null)
     useUiStore.getState().setAgentCanvasSession(null)
     setActiveView('home')
   }
@@ -757,6 +1059,85 @@ function AgentCanvasInner() {
     window.addEventListener('alethe:agent-canvas-exit', exitCanvas)
     return () => window.removeEventListener('alethe:agent-canvas-exit', exitCanvas)
   })
+
+  const clearCanvas = () => {
+    // Mata os workers reais (PTYs claude/codex = processos pesados) — assim o
+    // botão de limpar também é o "parar tudo / liberar RAM".
+    for (const w of codexWorkersRef.current) {
+      void killPty(w.ptyId).catch(() => {})
+    }
+    setCodexWorkers([])
+    setExpandedCodexId(null)
+    clearStore()
+    useNodeCostStore.getState().clear()
+  }
+
+  const clampZoom = (z: number) => Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, Math.round(z * 100) / 100))
+  const zoomBy = (delta: number) => setZoom((z) => clampZoom(z + delta))
+  // Ajusta o zoom pra árvore inteira caber na área visível e recentra (pan 0).
+  const fitZoom = () => {
+    const container = containerRef.current
+    const stage = stageRef.current
+    if (!container || !stage) return
+    const naturalH = stage.scrollHeight
+    const naturalW = stage.scrollWidth
+    if (!naturalH || !naturalW) return
+    const availH = container.clientHeight - 16
+    const availW = container.clientWidth - 16
+    setPan({ x: 0, y: 0 })
+    setZoom(clampZoom(Math.min(1, availH / naturalH, availW / naturalW)))
+  }
+
+  // Zoom com a roda do mouse (canvas de verdade). Listener nativo non-passive
+  // porque o onWheel do React é passive e não deixa dar preventDefault.
+  useEffect(() => {
+    const el = containerRef.current
+    if (!el) return
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault()
+      setZoom((z) => clampZoom(z * (e.deltaY < 0 ? 1.1 : 1 / 1.1)))
+    }
+    el.addEventListener('wheel', onWheel, { passive: false })
+    return () => el.removeEventListener('wheel', onWheel)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  // Pan: arrasta o fundo vazio do canvas (ou botão do meio) pra mover a árvore.
+  const onCanvasPointerDown = (e: ReactPointerEvent<HTMLDivElement>) => {
+    if (e.button !== 0 && e.button !== 1) return
+    const target = e.target as HTMLElement
+    // Botão esquerdo só inicia pan no fundo (não em card/botão/input/terminal).
+    if (
+      e.button === 0 &&
+      target.closest(
+        'button, input, textarea, select, a, [role="button"], [class*="terminal"], [data-no-pan]',
+      )
+    ) {
+      return
+    }
+    panStartRef.current = { mx: e.clientX, my: e.clientY, px: pan.x, py: pan.y }
+    setPanning(true)
+    try {
+      e.currentTarget.setPointerCapture(e.pointerId)
+    } catch {
+      /* ok */
+    }
+  }
+  const onCanvasPointerMove = (e: ReactPointerEvent<HTMLDivElement>) => {
+    const start = panStartRef.current
+    if (!start) return
+    setPan({ x: start.px + (e.clientX - start.mx), y: start.py + (e.clientY - start.my) })
+  }
+  const endPan = (e: ReactPointerEvent<HTMLDivElement>) => {
+    if (!panStartRef.current) return
+    panStartRef.current = null
+    setPanning(false)
+    try {
+      e.currentTarget.releasePointerCapture(e.pointerId)
+    } catch {
+      /* ok */
+    }
+  }
 
   const copyTestPrompt = () => {
     void writeClipboardText(TEST_PROMPT).then(() => {
@@ -771,7 +1152,36 @@ function AgentCanvasInner() {
   const done = nodes.filter((n) => n.status === 'done').length
   const taskList = Object.values(tasks)
 
-  const renderCard = (node: AgentNode) => (
+  // Agrupa subagents por tipo (frontend-dev, backend-dev, …) — cada tipo vira
+  // uma área/ramo, e os cards empilham pra baixo dentro dela (árvore).
+  const subagentGroups: Array<[string, AgentNode[]]> = (() => {
+    const map = new Map<string, AgentNode[]>()
+    for (const n of subagents) {
+      const arr = map.get(n.agentType)
+      if (arr) arr.push(n)
+      else map.set(n.agentType, [n])
+    }
+    return [...map]
+  })()
+
+  // Custo da sessão = lead (sessão viva) + soma dos nós (subagents/teammates).
+  const nodeTotals = selectNodeCostTotals(nodeCosts)
+  const sessionCostUsd = nodeTotals.costUsd + (leadCost?.cost_usd ?? 0)
+  const sessionTokens = nodeTotals.totalTokens + (leadCost?.total_tokens ?? 0)
+  const hasCost = sessionTokens > 0
+
+  // Economia estimada por rotear nós pra modelos mais baratos que o lead.
+  const routingSavings = estimateRoutingSavings(nodeCosts, leadCost?.model ?? null, pricing)
+
+  // Teto de orçamento: alerta em 80% (aviso) e 100% (crítico).
+  const budgetRatio = budgetUsd && budgetUsd > 0 ? sessionCostUsd / budgetUsd : 0
+  const budgetWarn = budgetUsd != null && budgetUsd > 0 && budgetRatio >= 0.8
+  const budgetCrit = budgetUsd != null && budgetUsd > 0 && sessionCostUsd >= budgetUsd
+
+  const renderCard = (node: AgentNode) => {
+    const cost = nodeCosts[node.id]
+    const model = cost ? shortModel(cost.model) : null
+    return (
     <div
       key={node.id}
       ref={(el) => {
@@ -826,19 +1236,43 @@ function AgentCanvasInner() {
       {node.status !== 'running' && node.result ? (
         <div className={styles.cardPrompt}>{node.result}</div>
       ) : null}
+      {cost ? (
+        <div className={styles.cardCost}>
+          {model ? <span className={styles.cardCostModel}>{model}</span> : null}
+          <span className={styles.cardCostTokens}>
+            {fmtTokens(cost.total_tokens)} {t('ws.tokens')}
+          </span>
+          {cost.cost_usd != null ? (
+            <span className={`${styles.cardCostUsd} ${costClassFor(cost.cost_usd)}`}>
+              {fmtUsd(cost.cost_usd)}
+            </span>
+          ) : null}
+        </div>
+      ) : null}
       <div className={styles.cardId}>{node.id}</div>
     </div>
-  )
+    )
+  }
 
   return (
     <div className={styles.layout}>
       <div className={styles.main}>
         <div
-          className={dragOver ? `${styles.canvas} ${styles.canvasDragOver}` : styles.canvas}
+          className={[
+            styles.canvas,
+            dragOver ? styles.canvasDragOver : '',
+            panning ? styles.canvasPanning : '',
+          ]
+            .filter(Boolean)
+            .join(' ')}
           ref={(el) => {
             containerRef.current = el
             setDropRef(el)
           }}
+          onPointerDown={onCanvasPointerDown}
+          onPointerMove={onCanvasPointerMove}
+          onPointerUp={endPan}
+          onPointerCancel={endPan}
         >
           <header className={styles.topBar}>
             <button type="button" className={styles.backButton} onClick={exitCanvas}>
@@ -847,22 +1281,99 @@ function AgentCanvasInner() {
             </button>
             <span className={styles.title}>{t('ws.agentCanvasPoc')}</span>
             <div className={styles.topRight}>
-              {usage ? (
+              <div className={styles.zoomControls}>
                 <button
                   type="button"
-                  className={
-                    usage.five_hour.utilization >= USAGE_FALLBACK_THRESHOLD || fallbackActive
-                      ? `${styles.usagePill} ${styles.usagePillCrit}`
-                      : styles.usagePill
-                  }
-                  title={t('ws.usagePillTitle', {
-                    reset: formatReset(usage.five_hour.resets_at, t('ws.now')),
-                  })}
-                  onClick={() => activateFallback(usage, true)}
+                  className={styles.clearButton}
+                  onClick={() => zoomBy(-ZOOM_STEP)}
+                  disabled={zoom <= ZOOM_MIN}
+                  title={t('ws.zoomOut')}
                 >
-                  {t('ws.claude5h', { pct: Math.round(usage.five_hour.utilization) })}
+                  <ZoomOut size={14} />
                 </button>
+                <span className={styles.zoomLabel}>{Math.round(zoom * 100)}%</span>
+                <button
+                  type="button"
+                  className={styles.clearButton}
+                  onClick={() => zoomBy(ZOOM_STEP)}
+                  disabled={zoom >= ZOOM_MAX}
+                  title={t('ws.zoomIn')}
+                >
+                  <ZoomIn size={14} />
+                </button>
+                <button
+                  type="button"
+                  className={styles.clearButton}
+                  onClick={fitZoom}
+                  title={t('ws.zoomFit')}
+                >
+                  <Frame size={14} />
+                </button>
+              </div>
+              {usage || codexUsage ? (
+                <div className={styles.usageAnchor} data-no-pan ref={usageAnchorRef}>
+                  <button
+                    type="button"
+                    className={
+                      (usage && usage.five_hour.utilization >= USAGE_FALLBACK_THRESHOLD) ||
+                      fallbackActive
+                        ? `${styles.usagePill} ${styles.usagePillCrit}`
+                        : styles.usagePill
+                    }
+                    title={t('ws.usagePanelOpen')}
+                    onClick={() => setUsageOpen((o) => !o)}
+                    aria-expanded={usageOpen}
+                  >
+                    {usage
+                      ? t('ws.claude5h', { pct: Math.round(usage.five_hour.utilization) })
+                      : t('ws.codex5h', { pct: Math.round(codexUsage!.primary.used_percent) })}
+                  </button>
+                  {usageOpen ? (
+                    <UsageDropdown
+                      claudeUsage={usage}
+                      codexUsage={codexUsage}
+                      tab={usageTab}
+                      onTab={setUsageTab}
+                      onClose={() => setUsageOpen(false)}
+                      onForceFallback={() => {
+                        activateFallback(usage, true)
+                        setUsageOpen(false)
+                      }}
+                    />
+                  ) : null}
+                </div>
               ) : null}
+              {hasCost ? (
+                <span
+                  className={styles.costPill}
+                  title={t('ws.sessionCostTitle', { tokens: fmtTokens(sessionTokens) })}
+                >
+                  <Coins size={12} />
+                  <span className={costClassFor(sessionCostUsd)}>{fmtUsd(sessionCostUsd)}</span>
+                </span>
+              ) : null}
+              {routingSavings > 0 ? (
+                <span className={styles.savingsPill} title={t('ws.savingsTitle')}>
+                  <PiggyBank size={12} />
+                  {t('ws.savedRouting', { usd: fmtUsd(routingSavings) })}
+                </span>
+              ) : null}
+              <label className={styles.budgetControl} title={t('ws.budgetTitle')}>
+                <Wallet size={12} />
+                <input
+                  type="number"
+                  min={0}
+                  step={1}
+                  inputMode="decimal"
+                  className={styles.budgetInput}
+                  value={budgetUsd ?? ''}
+                  placeholder={t('ws.budgetPlaceholder')}
+                  onChange={(e) => {
+                    const v = e.target.value
+                    setBudget(v === '' ? null : Math.max(0, Number(v)))
+                  }}
+                />
+              </label>
               <span className={styles.counter}>
                 {t('ws.runningDone', { running, done })}
                 {lastEventAt ? '' : ` · ${t('ws.waitingHooks', { endpoint: hooksEndpoint?.replace('http://127.0.0.1', ':') ?? '...' })}`}
@@ -879,7 +1390,7 @@ function AgentCanvasInner() {
               <button
                 type="button"
                 className={styles.clearButton}
-                onClick={clearStore}
+                onClick={clearCanvas}
                 disabled={nodes.length === 0 && taskList.length === 0}
                 title={t('ws.clearCanvas')}
               >
@@ -890,6 +1401,7 @@ function AgentCanvasInner() {
 
           <div
             className={paletteOpen ? styles.agentPalette : styles.agentPaletteCollapsed}
+            data-no-pan
             style={{
               left: palettePosition.x,
               top: palettePosition.y,
@@ -958,6 +1470,30 @@ function AgentCanvasInner() {
             </div>
           ) : null}
 
+          {budgetWarn && budgetUsd != null ? (
+            <div
+              className={
+                budgetCrit
+                  ? `${styles.fallbackBanner} ${styles.budgetBannerCrit}`
+                  : styles.fallbackBanner
+              }
+            >
+              <span className={styles.fallbackDot} />
+              <span className={styles.fallbackText}>
+                {t('ws.budgetBanner', {
+                  spent: fmtUsd(sessionCostUsd),
+                  cap: fmtUsd(budgetUsd),
+                  pct: Math.round(budgetRatio * 100),
+                })}
+              </span>
+            </div>
+          ) : null}
+
+          <div
+            className={styles.stage}
+            ref={stageRef}
+            style={{ transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})` }}
+          >
           <svg className={styles.edges}>
             {edges.map((e) => (
               <path
@@ -983,6 +1519,21 @@ function AgentCanvasInner() {
               <div className={styles.planeSubtitle}>
                 {session ? session.folder : t('ws.claudeMainSession')}
               </div>
+              {leadCost ? (
+                <div className={styles.cardCost}>
+                  {shortModel(leadCost.model) ? (
+                    <span className={styles.cardCostModel}>{shortModel(leadCost.model)}</span>
+                  ) : null}
+                  <span className={styles.cardCostTokens}>
+                    {fmtTokens(leadCost.total_tokens)} {t('ws.tokens')}
+                  </span>
+                  {leadCost.cost_usd != null ? (
+                    <span className={`${styles.cardCostUsd} ${costClassFor(leadCost.cost_usd)}`}>
+                      {fmtUsd(leadCost.cost_usd)}
+                    </span>
+                  ) : null}
+                </div>
+              ) : null}
             </div>
             <span className={running > 0 ? styles.planeDotActive : styles.planeDot} />
           </div>
@@ -1041,6 +1592,7 @@ function AgentCanvasInner() {
                     </span>
                   </div>
                   <div className={styles.cardPrompt}>{w.title}</div>
+                  {w.result ? <div className={styles.codexResult}>{w.result}</div> : null}
                   <div className={styles.codexCardFooter}>
                     <span className={styles.cardId}>{w.ptyId}</span>
                     <span className={styles.codexExpandHint}>
@@ -1069,39 +1621,81 @@ function AgentCanvasInner() {
                 </div>
               </div>
             ) : (
-              subagents.map(renderCard)
+              subagentGroups.map(([type, cards]) => {
+                const Icon = personaIconFor(type)
+                return (
+                  <div
+                    key={type}
+                    className={styles.agentGroup}
+                    style={{ ['--agent-color' as string]: colorFor(type) }}
+                  >
+                    <div
+                      className={styles.agentGroupHeader}
+                      ref={(el) => {
+                        if (el) cardRefs.current.set(`group:${type}`, el)
+                        else cardRefs.current.delete(`group:${type}`)
+                      }}
+                    >
+                      <Icon size={13} />
+                      <span className={styles.agentGroupName}>{type}</span>
+                      <span className={styles.agentGroupCount}>{cards.length}</span>
+                    </div>
+                    <div className={styles.agentGroupCards}>{cards.map(renderCard)}</div>
+                  </div>
+                )
+              })
             )}
           </div>
-        </div>
 
-        {/* painel de tasks do time */}
-        {taskList.length > 0 ? (
-          <aside className={styles.tasksPanel}>
-            <div className={styles.libraryTitle}>
-              <ListTodo size={13} /> tasks {teamName ? `· ${teamName}` : ''}
-            </div>
-            {taskList.map((task) => (
-              <div key={task.id} className={styles.taskRow}>
-                <span
-                  className={
-                    task.status === 'completed'
-                      ? styles.taskDotDone
-                      : task.status === 'in_progress'
-                        ? styles.taskDotActive
-                        : styles.taskDot
-                  }
-                />
-                <div className={styles.taskBody}>
-                  <div className={styles.taskSubject}>{task.subject}</div>
-                  <div className={styles.taskMeta}>
-                    #{task.id}
-                    {task.owner ? ` · ${task.owner}` : ''} · {task.status}
-                  </div>
-                </div>
+          {/* camada de tasks do time como DAG — cada task liga ao teammate dono */}
+          {taskList.length > 0 ? (
+            <div className={styles.tasksLayer}>
+              <div className={styles.tasksLayerTitle}>
+                <ListTodo size={13} /> {t('ws.tasksTitle')}
+                {teamName ? ` · ${teamName}` : ''}
               </div>
-            ))}
-          </aside>
-        ) : null}
+              <div className={styles.tasksLayerGrid}>
+                {taskList.map((task) => (
+                  <div
+                    key={task.id}
+                    ref={(el) => {
+                      if (el) taskRefs.current.set(task.id, el)
+                      else taskRefs.current.delete(task.id)
+                    }}
+                    className={
+                      task.status === 'completed'
+                        ? `${styles.taskNode} ${styles.taskNodeDone}`
+                        : styles.taskNode
+                    }
+                  >
+                    <div className={styles.taskNodeHead}>
+                      <span
+                        className={
+                          task.status === 'completed'
+                            ? styles.taskDotDone
+                            : task.status === 'in_progress'
+                              ? styles.taskDotActive
+                              : styles.taskDot
+                        }
+                      />
+                      <span className={styles.taskNodeSubject}>{task.subject}</span>
+                    </div>
+                    <div className={styles.taskNodeMeta}>
+                      #{task.id}
+                      {task.owner ? ` · ${task.owner}` : ''} ·{' '}
+                      {task.status === 'completed'
+                        ? t('ws.taskCompleted')
+                        : task.status === 'in_progress'
+                          ? t('ws.taskInProgress')
+                          : t('ws.taskPending')}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : null}
+          </div>
+        </div>
       </div>
 
       {session ? (
@@ -1136,7 +1730,7 @@ function AgentCanvasInner() {
             </button>
           </div>
           <div className={styles.terminalHost}>
-            {hooksSettingsPath && hooksEndpoint ? (
+            {hooksSettingsPath && hooksEndpoint && coreAgentsReady ? (
               <XTermView
                 ptyId={session.ptyId}
                 command="claude"
@@ -1146,7 +1740,7 @@ function AgentCanvasInner() {
                   '--settings',
                   hooksSettingsPath,
                   '--append-system-prompt',
-                  orchestrationRules(hooksEndpoint),
+                  orchestrationRules(hooksEndpoint, budgetUsd),
                 ]}
                 env={PTY_ENV}
                 terminalTheme={terminalTheme}
@@ -1173,7 +1767,7 @@ function AgentCanvasInner() {
             <div className={styles.codexModal} onClick={(e) => e.stopPropagation()}>
               <div className={styles.terminalHeader}>
                 <span className={styles.codexType}>
-                  <CodexIcon size={16} /> {t('ws.codexWorker')}
+                  <AgentIcon type={w.agent} size={16} theme={uiTheme} /> {t('ws.codexWorker')}
                 </span>
                 <span className={styles.terminalCwd}>{w.title}</span>
                 {w.exitedCode !== null ? (
@@ -1199,7 +1793,7 @@ function AgentCanvasInner() {
               <div className={styles.terminalHost}>
                 <XTermView
                   ptyId={w.ptyId}
-                  command="codex"
+                  command={w.agent}
                   cwd={w.cwd}
                   extraArgs={w.args}
                   terminalTheme={terminalTheme}

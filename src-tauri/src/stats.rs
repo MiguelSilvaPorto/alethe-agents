@@ -1,8 +1,9 @@
 use serde::Serialize;
 use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 use sysinfo::System;
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 pub struct MemoryStats {
     pub total_mb: f64,
     pub app_mb: f64,
@@ -70,7 +71,30 @@ pub fn collect_memory_stats() -> MemoryStats {
     }
 }
 
+/// Cache curto (2s): o polling de RAM (a cada 5s) e chamadas próximas não
+/// refazem o `refresh_processes(All)`, que varre todos os processos (caro no
+/// Windows). O lock do cache serializa chamadas concorrentes.
+fn cached_memory_stats() -> MemoryStats {
+    static CACHE: OnceLock<Mutex<Option<(Instant, MemoryStats)>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(None));
+    let mut guard = cache.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some((at, stats)) = guard.as_ref() {
+        if at.elapsed() < Duration::from_secs(2) {
+            return stats.clone();
+        }
+    }
+    let fresh = collect_memory_stats();
+    *guard = Some((Instant::now(), fresh.clone()));
+    fresh
+}
+
 #[tauri::command]
 pub fn get_memory_stats() -> MemoryStats {
-    collect_memory_stats()
+    cached_memory_stats()
+}
+
+/// Mesmo sampling cacheado (2s) do comando, pro heartbeat do crash_watch reusar
+/// a varredura sem refazer o `refresh_processes(All)` quando o front acabou de pollar.
+pub fn memory_stats_cached() -> MemoryStats {
+    cached_memory_stats()
 }

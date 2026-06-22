@@ -29,8 +29,7 @@ export function FindJumpModal() {
   const open = useUiStore((s) => s.openModal === 'findJump')
   const closeModal = useUiStore((s) => s.closeModal)
   const projects = useProjectsStore((s) => s.projects)
-  const setActiveProject = useProjectsStore((s) => s.setActiveProject)
-  const openPane = useProjectsStore((s) => s.openPane)
+  const openTerminalWorkspace = useProjectsStore((s) => s.openTerminalWorkspace)
 
   const [query, setQuery] = useState('')
   const [cursor, setCursor] = useState(0)
@@ -69,8 +68,9 @@ export function FindJumpModal() {
   }, [projects, query])
 
   const jump = (hit: Hit) => {
-    setActiveProject(hit.projectId)
-    openPane(hit.projectId, hit.terminalId)
+    openTerminalWorkspace(hit.projectId, hit.terminalId)
+    useUiStore.getState().setActiveView('workspace')
+    useUiStore.getState().requestPaneFocus(hit.terminalId)
     closeModal()
   }
 

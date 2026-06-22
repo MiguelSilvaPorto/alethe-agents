@@ -100,6 +100,33 @@ export async function getPtyCwd(id: string): Promise<string | null> {
   return invoke<string | null>('get_pty_cwd', { id })
 }
 
+export type DirectoryEntry = {
+  name: string
+  path: string
+  is_dir: boolean
+}
+
+export async function listDirectory(path: string): Promise<DirectoryEntry[]> {
+  return invoke<DirectoryEntry[]>('list_directory', { path })
+}
+
+export async function readTextFile(path: string): Promise<string> {
+  return invoke<string>('read_text_file', { path })
+}
+
+export async function watchFile(path: string): Promise<void> {
+  await invoke('watch_file', { path })
+}
+
+export async function unwatchFile(path: string): Promise<void> {
+  await invoke('unwatch_file', { path })
+}
+
+/** Acorda quando um arquivo observado por `watchFile` muda no disco. */
+export function listenFileChanged(handler: (path: string) => void): Promise<UnlistenFn> {
+  return listen<{ path: string }>('md://changed', (event) => handler(event.payload.path))
+}
+
 export function listenPtyData(
   id: string,
   handler: (chunk: string) => void,
@@ -128,6 +155,23 @@ export async function getMemoryStats(): Promise<MemoryStats> {
   return invoke<MemoryStats>('get_memory_stats')
 }
 
+/** Estado da sessão anterior, se ela não saiu limpa (provável crash/OOM/kill). */
+export type CrashReport = {
+  started_at_ms: number
+  clean_exit: boolean
+  app_version: string
+  last_heartbeat_ms: number
+  total_mb: number
+  ptys_mb: number
+  webview_mb: number
+  process_count: number
+}
+
+/** null se a sessão anterior saiu limpa (ou é o primeiro boot). */
+export async function getLastCrashReport(): Promise<CrashReport | null> {
+  return invoke<CrashReport | null>('get_last_crash_report')
+}
+
 export async function openDataFolder(): Promise<void> {
   await invoke('open_data_folder')
 }
@@ -146,6 +190,27 @@ export async function openInVscode(path: string): Promise<void> {
 
 export async function openInBrowser(target: string): Promise<void> {
   await invoke('open_in_browser', { target })
+}
+
+export async function openLogsFolder(): Promise<void> {
+  await invoke('open_logs_folder')
+}
+
+export async function exportLogs(targetPath: string): Promise<void> {
+  await invoke('export_logs', { targetPath })
+}
+
+/** Persiste um erro do frontend no log de crash. Nunca lança (logging não pode quebrar o caller). */
+export async function recordFrontendError(
+  message: string,
+  stack: string | null,
+  kind: string,
+): Promise<void> {
+  try {
+    await invoke('record_frontend_error', { message, stack, kind })
+  } catch {
+    /* logging best-effort */
+  }
 }
 
 export async function writeClipboardText(text: string): Promise<void> {
@@ -184,6 +249,35 @@ export async function importBackup(sourcePath: string): Promise<void> {
   await invoke('import_backup', { sourcePath })
 }
 
+export type GithubSyncStatus = {
+  connected: boolean
+  login: string | null
+  gist_id: string | null
+  gist_url: string | null
+  last_push_ms: number | null
+  last_pull_ms: number | null
+}
+
+export async function githubSyncStatus(): Promise<GithubSyncStatus> {
+  return invoke<GithubSyncStatus>('github_sync_status')
+}
+
+export async function githubSyncSetToken(token: string): Promise<GithubSyncStatus> {
+  return invoke<GithubSyncStatus>('github_sync_set_token', { token })
+}
+
+export async function githubSyncLogout(): Promise<GithubSyncStatus> {
+  return invoke<GithubSyncStatus>('github_sync_logout')
+}
+
+export async function githubSyncPush(): Promise<GithubSyncStatus> {
+  return invoke<GithubSyncStatus>('github_sync_push')
+}
+
+export async function githubSyncPull(): Promise<GithubSyncStatus> {
+  return invoke<GithubSyncStatus>('github_sync_pull')
+}
+
 export type ClaudeUsageWindow = {
   utilization: number
   resets_at: string
@@ -197,6 +291,80 @@ export type ClaudeUsage = {
 
 export async function getClaudeUsage(): Promise<ClaudeUsage> {
   return invoke<ClaudeUsage>('get_claude_usage')
+}
+
+export type CodexUsageWindow = {
+  used_percent: number
+  window_minutes: number
+  /** Epoch em milissegundos (0 = desconhecido). */
+  resets_at_ms: number
+}
+
+export type CodexUsage = {
+  primary: CodexUsageWindow
+  secondary: CodexUsageWindow
+  plan: string
+  rate_limited: boolean
+  reset_credits: number
+}
+
+export async function getCodexUsage(): Promise<CodexUsage> {
+  return invoke<CodexUsage>('get_codex_usage')
+}
+
+/** Custo por modelo dentro de uma sessão (tokens + USD). */
+export type ModelCost = {
+  model: string
+  input: number
+  output: number
+  cache_read: number
+  cache_write_5m: number
+  cache_write_1h: number
+  /** null se o modelo não está na tabela de preço (ex.: GPT do Codex). */
+  cost_usd: number | null
+}
+
+/** Custo real de uma sessão, parseado do JSONL (Claude/Codex). */
+export type SessionCost = {
+  session_id: string
+  agent: string
+  input: number
+  output: number
+  cache_read: number
+  cache_write_5m: number
+  cache_write_1h: number
+  total_tokens: number
+  cost_usd: number | null
+  model: string | null
+  by_model: ModelCost[]
+}
+
+export async function getSessionCost(
+  agent: string,
+  cwd: string,
+  sessionId: string,
+): Promise<SessionCost> {
+  return invoke<SessionCost>('get_session_cost', { agent, cwd, sessionId })
+}
+
+/** Custo de um transcript JSONL do Claude por path — pros nós do agent canvas. */
+export async function getTranscriptCost(path: string): Promise<SessionCost> {
+  return invoke<SessionCost>('get_transcript_cost', { path })
+}
+
+/** Preço por 1M de tokens por família de modelo (opus/sonnet/haiku). */
+export type ModelRate = {
+  family: string
+  input: number
+  output: number
+  cache_write_5m: number
+  cache_write_1h: number
+  cache_read: number
+}
+
+/** Tabela de preço (do backend) pra estimar economia por roteamento no front. */
+export async function getModelPricing(): Promise<ModelRate[]> {
+  return invoke<ModelRate[]>('get_model_pricing')
 }
 
 export type ClaudeSessionMeta = {
@@ -242,4 +410,68 @@ export type ActivityDay = {
 
 export async function getClaudeActivity(days: number): Promise<ActivityDay[]> {
   return invoke<ActivityDay[]>('get_claude_activity', { days })
+}
+
+export type ActivityAgentSample = {
+  agent: Exclude<import('./types').AgentType, 'shell'>
+  projectId: string | null
+  terminalId: string | null
+  state: 'working' | 'waiting'
+}
+
+export type ActivitySample = {
+  date: string
+  durationMs: number
+  appFocused: boolean
+  userActive: boolean
+  activeProjectId: string | null
+  activeTerminalId: string | null
+  agents: ActivityAgentSample[]
+}
+
+export type ActivityTimeTotals = {
+  appOpenMs: number
+  appFocusedMs: number
+  userActiveMs: number
+  userIdleMs: number
+  agentWallMs: number
+  agentSumMs: number
+  agentBackgroundMs: number
+  parallelMs: number
+  peakConcurrent: number
+}
+
+export type AgentTimeStats = {
+  workingMs: number
+  waitingMs: number
+  focusedMs: number
+  backgroundMs: number
+}
+
+export type ProjectTimeStats = {
+  focusedMs: number
+  activeMs: number
+  idleMs: number
+  agentWallMs: number
+  agentSumMs: number
+  agentBackgroundMs: number
+  parallelMs: number
+}
+
+export type ActivitySummary = {
+  totals: ActivityTimeTotals
+  agents: Record<string, AgentTimeStats>
+  projects: Record<string, ProjectTimeStats>
+}
+
+export async function recordActivitySamples(samples: ActivitySample[]): Promise<void> {
+  await invoke('record_activity_samples', { samples })
+}
+
+export async function getActivitySummary(dates: string[] = []): Promise<ActivitySummary> {
+  return invoke<ActivitySummary>('get_activity_summary', { dates })
+}
+
+export async function clearActivityStats(): Promise<void> {
+  await invoke('clear_activity_stats')
 }

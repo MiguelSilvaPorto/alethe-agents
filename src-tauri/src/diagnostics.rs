@@ -324,3 +324,58 @@ pub fn reset_app_data(app: AppHandle) -> Result<(), String> {
     }
     Ok(())
 }
+
+/// Abre a pasta de logs (raiz `app_local_data_dir()/logs`, compartilhada por
+/// todos os perfis) no explorer/Finder.
+#[tauri::command]
+pub fn open_logs_folder(app: AppHandle) -> Result<(), String> {
+    let path = crate::logging::logs_dir(&app)?;
+    fs::create_dir_all(&path).map_err(|error| error.to_string())?;
+
+    #[cfg(target_os = "windows")]
+    let result = Command::new("explorer").arg(&path).spawn();
+    #[cfg(target_os = "macos")]
+    let result = Command::new("open").arg(&path).spawn();
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let result = Command::new("xdg-open").arg(&path).spawn();
+
+    result.map(|_| ()).map_err(|error| error.to_string())
+}
+
+/// Empacota a pasta de logs num zip em `target_path` (pra anexar a um report de
+/// bug). Mesmo padrão de `backup::export_backup`.
+#[tauri::command]
+pub fn export_logs(app: AppHandle, target_path: String) -> Result<(), String> {
+    use std::io::Write;
+    use zip::write::FileOptions;
+    use zip::{CompressionMethod, ZipWriter};
+
+    let dir = crate::logging::logs_dir(&app)?;
+    let target = PathBuf::from(target_path);
+    if let Some(parent) = target.parent() {
+        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let file = fs::File::create(&target).map_err(|e| e.to_string())?;
+    let mut zip = ZipWriter::new(file);
+    let opts = FileOptions::default().compression_method(CompressionMethod::Deflated);
+
+    if dir.is_dir() {
+        for entry in fs::read_dir(&dir).map_err(|e| e.to_string())? {
+            let entry = entry.map_err(|e| e.to_string())?;
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+            let name = path
+                .file_name()
+                .ok_or_else(|| "log sem nome".to_string())?
+                .to_string_lossy()
+                .to_string();
+            zip.start_file(name, opts).map_err(|e| e.to_string())?;
+            let bytes = fs::read(&path).map_err(|e| e.to_string())?;
+            zip.write_all(&bytes).map_err(|e| e.to_string())?;
+        }
+    }
+    zip.finish().map_err(|e| e.to_string())?;
+    Ok(())
+}

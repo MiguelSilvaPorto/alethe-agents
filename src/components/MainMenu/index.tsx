@@ -1,9 +1,11 @@
 import {
   Download,
+  FileArchive,
   FileText,
   FolderOpen,
   Layers,
   RefreshCw,
+  ScrollText,
   Settings,
   Sparkles,
   Sun,
@@ -16,8 +18,10 @@ import { useT } from '../../lib/i18n'
 import { pickFile, saveFile } from '../../lib/dialog'
 import {
   exportBackup,
+  exportLogs,
   importBackup,
   openDataFolder,
+  openLogsFolder,
   openSpawnLog,
   resetAppData,
 } from '../../lib/tauri'
@@ -120,6 +124,25 @@ export function MainMenu() {
         onClick={() => void action(openSpawnLog)}
       >
         <FileText size={14} /> <span>{t('menu.openSpawnLog')}</span>
+      </button>
+      <button type="button" className={styles.item} onClick={() => void action(openLogsFolder)}>
+        <ScrollText size={14} /> <span>{t('menu.openLogs')}</span>
+      </button>
+      <button
+        type="button"
+        className={styles.item}
+        onClick={() =>
+          void action(async () => {
+            const target = await saveFile({
+              title: t('menu.exportLogsTitle'),
+              defaultPath: `alethe-logs-${new Date().toISOString().slice(0, 10)}.zip`,
+              filters: [{ name: t('menu.logsFilter'), extensions: ['zip'] }],
+            })
+            if (target) await exportLogs(target)
+          })
+        }
+      >
+        <FileArchive size={14} /> <span>{t('menu.exportLogs')}</span>
       </button>
       <div className={styles.separator} />
       <button

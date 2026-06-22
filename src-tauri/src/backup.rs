@@ -5,7 +5,7 @@ use tauri::AppHandle;
 use zip::write::FileOptions;
 use zip::{CompressionMethod, ZipArchive, ZipWriter};
 
-use crate::paths::{app_data_dir, projects_file_path};
+use crate::paths::{activity_stats_file_path, app_data_dir, projects_file_path};
 
 /// Empacota `projects.json` + `scrollback/` num zip salvo em `target_path`.
 /// Não inclui `spawn.log` (debug-only) nem `tmp` (artefatos do save atômico).
@@ -26,6 +26,15 @@ pub fn export_backup(app: AppHandle, target_path: String) -> Result<(), String> 
         zip.start_file("projects.json", opts)
             .map_err(|e| e.to_string())?;
         let bytes = fs::read(&projects).map_err(|e| e.to_string())?;
+        zip.write_all(&bytes).map_err(|e| e.to_string())?;
+    }
+
+    // Métricas de tempo pertencem ao perfil e acompanham seu backup.
+    let activity_stats = activity_stats_file_path(&app)?;
+    if activity_stats.is_file() {
+        zip.start_file("activity-stats.json", opts)
+            .map_err(|e| e.to_string())?;
+        let bytes = fs::read(&activity_stats).map_err(|e| e.to_string())?;
         zip.write_all(&bytes).map_err(|e| e.to_string())?;
     }
 
@@ -66,6 +75,10 @@ pub fn import_backup(app: AppHandle, source_path: String) -> Result<(), String> 
     let scrollback = dir.join("scrollback");
     if scrollback.exists() {
         let _ = fs::remove_dir_all(&scrollback);
+    }
+    let activity_stats = activity_stats_file_path(&app)?;
+    if activity_stats.exists() {
+        fs::remove_file(activity_stats).map_err(|e| e.to_string())?;
     }
 
     let file = fs::File::open(&source_path).map_err(|e| e.to_string())?;

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import {
+  formatDroppedPaths,
   getTerminalScrollbackRows,
   getWheelScrollLines,
   normalizePastedText,
@@ -24,4 +25,24 @@ test('getWheelScrollLines preserves larger wheel intent across delta modes', () 
 
 test('getTerminalScrollbackRows keeps enough rows for long agent chats', () => {
   assert.ok(getTerminalScrollbackRows() >= 10_000)
+})
+
+test('formatDroppedPaths leaves space-free paths unquoted with a trailing space', () => {
+  assert.equal(formatDroppedPaths(['C:\\a\\b.txt']), 'C:\\a\\b.txt ')
+})
+
+test('formatDroppedPaths quotes paths containing whitespace', () => {
+  assert.equal(formatDroppedPaths(['C:\\meu path\\f.txt']), '"C:\\meu path\\f.txt" ')
+})
+
+test('formatDroppedPaths joins multiple paths, quoting only those with spaces', () => {
+  assert.equal(
+    formatDroppedPaths(['C:\\a.txt', 'C:\\my dir\\b.txt']),
+    'C:\\a.txt "C:\\my dir\\b.txt" ',
+  )
+})
+
+test('formatDroppedPaths returns empty string when no valid paths', () => {
+  assert.equal(formatDroppedPaths([]), '')
+  assert.equal(formatDroppedPaths(['', '']), '')
 })

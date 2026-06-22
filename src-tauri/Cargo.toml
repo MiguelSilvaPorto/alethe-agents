@@ -33,6 +33,7 @@ base64 = "0.22"
 urlencoding = "2"
 dotenvy = "0.15"
 discord-rich-presence = "1.1.0"
+notify = "6"
 
 # Dependências só-Windows (registro + Win32). Em Linux/macOS o `winreg` nem
 # compila, então ficam atrás de `cfg(windows)`; o código que as usa já é gated.
@@ -44,6 +45,11 @@ windows-sys = { version = "0.61", features = [
   "Win32_System_Memory",
   "Win32_System_Ole",
 ] }
+
+# Em dev, unwind permite que um panic de comando vire Err em vez de derrubar o
+# app inteiro durante uma sessão de HMR. Release segue abort (binário menor).
+[profile.dev]
+panic = "unwind"
 
 [profile.release]
 panic = "abort"

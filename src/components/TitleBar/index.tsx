@@ -1,12 +1,16 @@
 import { getCurrentWindow } from '@tauri-apps/api/window'
-import { Maximize2, Menu, Minus, PanelLeftClose, PanelLeftOpen, Users, Workflow, X } from 'lucide-react'
-import { useEffect } from 'react'
+import { ArrowLeft, ArrowRight, Maximize2, Menu, Minus, PanelLeftClose, PanelLeftOpen, Pencil, Pin, RefreshCw, Users, Workflow, X } from 'lucide-react'
+import { useEffect, useRef, useState } from 'react'
+
+import { ContextMenu, type MenuItem } from '../ProjectSidebar/ContextMenu'
+import { ClaudeIcon, CodexIcon } from '../icons/AgentIcons'
 
 import { getCachedClaudeUsage } from '../../lib/claudeUsageCache'
+import { getCachedCodexUsage } from '../../lib/codexUsageCache'
 import { useT } from '../../lib/i18n'
 import { getMemoryStats, killPty } from '../../lib/tauri'
 import type { ClaudeUsage } from '../../lib/tauri'
-import { MAX_RECENT_PROJECT_TABS, useProjectsStore } from '../../stores/projectsStore'
+import { useProjectsStore } from '../../stores/projectsStore'
 import { useUiStore } from '../../stores/uiStore'
 import styles from './TitleBar.module.css'
 
@@ -14,10 +18,10 @@ const RAM_POLL_INTERVAL_MS = 5000
 const CLAUDE_POLL_INTERVAL_MS = 5 * 60_000
 const APP_TITLE = import.meta.env.DEV ? '(DEV) Alethe' : 'Alethe'
 
-function claudePillColor(utilization: number): string {
-  if (utilization >= 80) return '#e53935'
-  if (utilization >= 50) return '#f9a825'
-  return '#43a047'
+function usagePillColor(utilization: number): string {
+  if (utilization >= 80) return 'var(--status-offline)'
+  if (utilization >= 50) return 'var(--status-waiting)'
+  return 'var(--status-working)'
 }
 
 function formatResetTime(resetsAt: string): string {
@@ -41,49 +45,35 @@ function buildClaudeTooltip(usage: ClaudeUsage): string {
   ].join('\n')
 }
 
-function collectGroupProjectIds(groupId: string, groups: { id: string; parentGroupId: string | null; projectIds: string[] }[]): Set<string> {
-  const result = new Set<string>()
-  const queue = [groupId]
-  while (queue.length > 0) {
-    const current = queue.shift()!
-    const group = groups.find((g) => g.id === current)
-    if (!group) continue
-    for (const projectId of group.projectIds) result.add(projectId)
-    for (const child of groups) {
-      if (child.parentGroupId === current) queue.push(child.id)
-    }
-  }
-  return result
-}
-
 export function TitleBar() {
   const t = useT()
   const toggleMainMenu = useUiStore((s) => s.toggleMainMenu)
   const sidebarVisible = useUiStore((s) => s.sidebarVisible)
   const toggleSidebar = useUiStore((s) => s.toggleSidebar)
-  const activeGroupTabId = useUiStore((s) => s.activeGroupTabId)
   const activeView = useUiStore((s) => s.activeView)
   const agentCanvasSession = useUiStore((s) => s.agentCanvasSession)
-  const setActiveGroupTab = useUiStore((s) => s.setActiveGroupTab)
   const setAgentCanvasSession = useUiStore((s) => s.setAgentCanvasSession)
   const setActiveView = useUiStore((s) => s.setActiveView)
   const ramMb = useUiStore((s) => s.ramMb)
   const addMemorySample = useUiStore((s) => s.addMemorySample)
   const claudeUsage = useUiStore((s) => s.claudeUsage)
+  const codexUsage = useUiStore((s) => s.codexUsage)
   const setClaudeUsage = useUiStore((s) => s.setClaudeUsage)
+  const setCodexUsage = useUiStore((s) => s.setCodexUsage)
   const openModal = useUiStore((s) => s.openModal_)
-  const containers = useProjectsStore((s) => s.workspace.containers)
-  const recentProjectIds = useProjectsStore((s) => s.workspace.recentProjectIds)
-  const recentTabs = useProjectsStore((s) => s.workspace.recentTabs)
+  const workspaceTabs = useProjectsStore((s) => s.workspace.tabs)
+  const activeWorkspaceTabId = useProjectsStore((s) => s.workspace.activeTabId)
+  const historyIndex = useProjectsStore((s) => s.workspace.historyIndex)
+  const historyLength = useProjectsStore((s) => s.workspace.history.length)
   const profiles = useProjectsStore((s) => s.profiles)
   const activeProfileId = useProjectsStore((s) => s.activeProfileId)
-  const projects = useProjectsStore((s) => s.projects)
-  const groups = useProjectsStore((s) => s.groups)
-  const activeProjectId = useProjectsStore((s) => s.activeProjectId)
-  const setActiveProject = useProjectsStore((s) => s.setActiveProject)
-  const openGroupScope = useProjectsStore((s) => s.openGroupScope)
-  const closeWorkspaceTab = useProjectsStore((s) => s.closeWorkspaceTab)
-  const closeOtherContainers = useProjectsStore((s) => s.closeOtherContainers)
+  const preferences = useProjectsStore((s) => s.preferences)
+  const activateWorkspaceTab = useProjectsStore((s) => s.activateWorkspaceTab)
+  const toggleWorkspaceTabPinned = useProjectsStore((s) => s.toggleWorkspaceTabPinned)
+  const closeSavedWorkspaceTab = useProjectsStore((s) => s.closeSavedWorkspaceTab)
+  const addWorkspaceTabToCurrent = useProjectsStore((s) => s.addWorkspaceTabToCurrent)
+  const [tabMenu, setTabMenu] = useState<{ x: number; y: number; items: MenuItem[] } | null>(null)
+  const navigateWorkspaceHistory = useProjectsStore((s) => s.navigateWorkspaceHistory)
   const activeProfile = profiles.find((profile) => profile.id === activeProfileId) ?? null
 
   const closeAgentPlanning = () => {
@@ -98,45 +88,16 @@ export function TitleBar() {
     setAgentCanvasSession(null)
   }
 
-  const recentWorkspaceTabs = (() => {
-    const projectsById = new Map(projects.map((p) => [p.id, p]))
-    const groupsById = new Map(groups.map((g) => [g.id, g]))
-    const containersByProjectId = new Map(containers.map((c) => [c.projectId, c]))
-    const tabs =
-      recentTabs.length > 0
-        ? recentTabs
-        : (recentProjectIds.length > 0
-            ? recentProjectIds
-            : [...containers]
-                .sort((a, b) => (b.lastUsedAt ?? 0) - (a.lastUsedAt ?? 0))
-                .map((c) => c.projectId)
-          ).map((id) => ({ kind: 'project' as const, id }))
-
-    return tabs
-      .map((tab) => {
-        if (tab.kind === 'group') {
-          const group = groupsById.get(tab.id)
-          if (!group) return null
-          const projectCount = collectGroupProjectIds(tab.id, groups).size
-          return { kind: 'group' as const, group, projectCount }
-        }
-        const project = projectsById.get(tab.id)
-        if (!project) return null
-        return {
-          kind: 'project' as const,
-          project,
-          container: containersByProjectId.get(tab.id) ?? null,
-        }
-      })
-      .filter((entry): entry is NonNullable<typeof entry> => Boolean(entry))
-      .slice(0, MAX_RECENT_PROJECT_TABS)
-  })()
+  // Pausa o polling (RAM + usage) quando a janela não está focada/visível —
+  // telemetria não precisa rodar em background. Reativa no próximo tick.
+  const activeRef = useRef(true)
 
   // RAM polling — adiado pra não competir com boot/render inicial.
   useEffect(() => {
     let cancelled = false
     let interval: number | null = null
     const tick = async () => {
+      if (!activeRef.current) return
       try {
         const stats = await getMemoryStats()
         if (!cancelled) addMemorySample(stats)
@@ -161,6 +122,7 @@ export function TitleBar() {
     let interval: number | null = null
     let consecutiveFailures = 0
     const tick = async () => {
+      if (!activeRef.current) return
       try {
         const usage = await getCachedClaudeUsage()
         if (!cancelled) {
@@ -187,7 +149,57 @@ export function TitleBar() {
     }
   }, [setClaudeUsage])
 
+  // Codex usage polling — sobe o `codex app-server` (subprocesso pesado), então
+  // arranca depois do Claude (2.5s) e reusa o mesmo intervalo de 5min.
+  useEffect(() => {
+    let cancelled = false
+    let interval: number | null = null
+    let consecutiveFailures = 0
+    const tick = async () => {
+      if (!activeRef.current) return
+      try {
+        const usage = await getCachedCodexUsage()
+        if (!cancelled) {
+          setCodexUsage(usage)
+          consecutiveFailures = 0
+        }
+      } catch {
+        consecutiveFailures += 1
+        if (consecutiveFailures >= 3 && !cancelled) {
+          setCodexUsage(null)
+        }
+      }
+    }
+    const startupDelay = window.setTimeout(() => {
+      void tick()
+      interval = window.setInterval(tick, CLAUDE_POLL_INTERVAL_MS)
+    }, 2500)
+    return () => {
+      cancelled = true
+      window.clearTimeout(startupDelay)
+      if (interval !== null) window.clearInterval(interval)
+    }
+  }, [setCodexUsage])
+
   const win = getCurrentWindow()
+
+  // Rastreia foco/visibilidade da janela pra pausar o polling em background.
+  useEffect(() => {
+    const update = (focused: boolean) => {
+      activeRef.current = focused && document.visibilityState === 'visible'
+    }
+    update(document.hasFocus())
+    const onVisibility = () => update(document.hasFocus())
+    document.addEventListener('visibilitychange', onVisibility)
+    let unlisten: (() => void) | undefined
+    void win.onFocusChanged(({ payload }) => update(payload)).then((fn) => {
+      unlisten = fn
+    })
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibility)
+      unlisten?.()
+    }
+  }, [win])
 
   useEffect(() => {
     document.title = APP_TITLE
@@ -218,110 +230,105 @@ export function TitleBar() {
       <span className={styles.title} data-tauri-drag-region>
         {APP_TITLE}
       </span>
-      {recentWorkspaceTabs.length > 0 || agentCanvasSession ? (
+      {workspaceTabs.length > 0 || agentCanvasSession ? (
         <div
           className={styles.groupTabs}
           role="tablist"
           aria-label={t('ui.titlebar.recentTabs')}
           data-tauri-drag-region
         >
-          {recentWorkspaceTabs.map((tab) => {
-            if (tab.kind === 'group') {
-              const { group, projectCount } = tab
-              return (
-                <div
-                  key={`group:${group.id}`}
-                  className={`${styles.groupTab} ${
-                    activeGroupTabId === group.id ? styles.groupTabActive : ''
-                  }`}
-                >
-                  <button
-                    type="button"
-                    role="tab"
-                    aria-selected={activeGroupTabId === group.id}
-                    className={styles.groupTabMain}
-                    onClick={() => {
-                      openGroupScope(group.id)
-                      setActiveGroupTab(group.id)
-                      setActiveView('workspace')
-                    }}
-                    onDoubleClick={() => {
-                      openGroupScope(group.id, 'only')
-                      setActiveGroupTab(group.id)
-                      setActiveView('workspace')
-                    }}
-                    title={group.name}
-                  >
-                    {group.iconUrl ? (
-                      <img src={group.iconUrl} alt="" className={styles.groupTabIcon} />
-                    ) : (
-                      <span className={styles.groupTabDot} style={{ background: group.color }} />
-                    )}
-                    <span className={styles.groupTabName}>{group.name}</span>
-                    <span className={styles.groupTabCount}>{projectCount}</span>
-                  </button>
-                  <button
-                    type="button"
-                    className={styles.groupTabClose}
-                    onClick={(event) => {
-                      event.stopPropagation()
-                      closeWorkspaceTab({ kind: 'group', id: group.id })
-                    }}
-                    title={t('ui.titlebar.removeFromTopbar')}
-                    aria-label={t('ui.titlebar.removeNameFromTopbar', { name: group.name })}
-                  >
-                    <X size={11} />
-                  </button>
-                </div>
-              )
-            }
-            const { project, container } = tab
+          <div className={styles.historyControls}>
+            <button
+              type="button"
+              className={styles.historyBtn}
+              disabled={historyIndex <= 0}
+              onClick={() => { navigateWorkspaceHistory(-1); setActiveView('workspace') }}
+              title={t('ui.titlebar.back')}
+              aria-label={t('ui.titlebar.back')}
+            >
+              <ArrowLeft size={13} />
+            </button>
+            <button
+              type="button"
+              className={styles.historyBtn}
+              disabled={historyIndex < 0 || historyIndex >= historyLength - 1}
+              onClick={() => { navigateWorkspaceHistory(1); setActiveView('workspace') }}
+              title={t('ui.titlebar.forward')}
+              aria-label={t('ui.titlebar.forward')}
+            >
+              <ArrowRight size={13} />
+            </button>
+          </div>
+          {workspaceTabs.map((tab) => {
+            const active = activeWorkspaceTabId === tab.id
+            const count = tab.snapshot.containers.reduce(
+              (total, container) => total + container.paneIds.length,
+              0,
+            )
             return (
               <div
-                key={`project:${project.id}`}
-                className={`${styles.groupTab} ${
-                  activeGroupTabId === null && activeProjectId === project.id
-                    ? styles.groupTabActive
-                    : ''
-                }`}
+                key={tab.id}
+                className={`${styles.groupTab} ${active ? styles.groupTabActive : ''} ${tab.pinned ? styles.groupTabPinned : ''}`}
+                onContextMenu={(event) => {
+                  event.preventDefault()
+                  setTabMenu({
+                    x: event.clientX,
+                    y: event.clientY,
+                    items: [
+                      {
+                        kind: 'item',
+                        label: t('ui.workspace.openIndividually'),
+                        onClick: () => { activateWorkspaceTab(tab.id); setActiveView('workspace') },
+                      },
+                      {
+                        kind: 'item',
+                        label: t('ui.workspace.addToCurrent'),
+                        onClick: () => { addWorkspaceTabToCurrent(tab.id); setActiveView('workspace') },
+                      },
+                      { kind: 'separator' },
+                      {
+                        kind: 'item',
+                        label: tab.pinned ? t('ui.titlebar.unpinTab') : t('ui.titlebar.pinTab'),
+                        onClick: () => toggleWorkspaceTabPinned(tab.id),
+                      },
+                      { kind: 'separator' },
+                      {
+                        kind: 'item',
+                        label: t('ui.titlebar.removeFromTopbar'),
+                        danger: true,
+                        onClick: () => closeSavedWorkspaceTab(tab.id),
+                      },
+                    ],
+                  })
+                }}
               >
                 <button
                   type="button"
                   role="tab"
-                  aria-selected={activeGroupTabId === null && activeProjectId === project.id}
+                  aria-selected={active}
                   className={styles.groupTabMain}
-                  onClick={() => {
-                    setActiveProject(project.id)
-                    setActiveGroupTab(null)
-                    setActiveView('workspace')
-                  }}
-                  onDoubleClick={() => {
-                    closeOtherContainers(project.id)
-                    setActiveProject(project.id)
-                    setActiveGroupTab(null)
-                    setActiveView('workspace')
-                  }}
-                  title={project.name}
+                  onClick={() => { activateWorkspaceTab(tab.id); setActiveView('workspace') }}
+                  title={tab.label}
                 >
-                  {project.iconUrl ? (
-                    <img src={project.iconUrl} alt="" className={styles.groupTabIcon} />
+                  {tab.pinned ? (
+                    <Pin size={11} className={styles.groupTabPinIcon} />
+                  ) : null}
+                  {tab.iconUrl ? (
+                    <img src={tab.iconUrl} alt="" className={styles.groupTabIcon} />
+                  ) : tab.kind === 'composition' ? (
+                    <Workflow size={14} className={styles.groupTabIconSvg} />
                   ) : (
-                    <span className={styles.groupTabDot} style={{ background: project.color ?? '#6ea8ff' }} />
+                    <span className={styles.groupTabDot} style={{ background: tab.color ?? '#6ea8ff' }} />
                   )}
-                  <span className={styles.groupTabName}>{project.name}</span>
-                  <span className={styles.groupTabCount}>
-                    {container?.paneIds.length ?? project.terminals.length}
-                  </span>
+                  <span className={styles.groupTabName}>{tab.label}</span>
+                  <span className={styles.groupTabCount}>{count}</span>
                 </button>
                 <button
                   type="button"
                   className={styles.groupTabClose}
-                  onClick={(event) => {
-                    event.stopPropagation()
-                    closeWorkspaceTab({ kind: 'project', id: project.id })
-                  }}
+                  onClick={(event) => { event.stopPropagation(); closeSavedWorkspaceTab(tab.id) }}
                   title={t('ui.titlebar.removeFromTopbar')}
-                  aria-label={t('ui.titlebar.removeNameFromTopbar', { name: project.name })}
+                  aria-label={t('ui.titlebar.removeNameFromTopbar', { name: tab.label })}
                 >
                   <X size={11} />
                 </button>
@@ -361,36 +368,39 @@ export function TitleBar() {
         </div>
       ) : null}
       <div className={styles.spacer} data-tauri-drag-region />
-      <button
-        type="button"
-        className={styles.profilePill}
-        title={t('profile.manageAccounts')}
-        onClick={() => openModal('profiles')}
-      >
-        <Users size={12} />
-        <span className={styles.profilePillLabel}>
-          {activeProfile?.name ?? t('profile.localAccount')}
-        </span>
-      </button>
-      {claudeUsage !== null ? (
-        <span
-          className={styles.claudePill}
-          style={{ '--pill-color': claudePillColor(claudeUsage.five_hour.utilization) } as React.CSSProperties}
-          title={buildClaudeTooltip(claudeUsage)}
-        >
-          {claudeUsage.five_hour.utilization.toFixed(0)}%
-        </span>
-      ) : null}
-      {ramMb !== null ? (
-        <button
-          type="button"
-          className={styles.ramPill}
-          title={t('ui.titlebar.openMemoryAnalytics')}
-          onClick={() => openModal('memoryAnalytics')}
-        >
-          {ramMb.toFixed(0)} MB
+      <div className={styles.widgets}>
+        {preferences.topbarShowSync ? (
+          <button type="button" className={styles.syncPill} title={t('sync.title')} aria-label={t('sync.title')} onClick={() => openModal('sync')}>
+            <RefreshCw size={12} />
+          </button>
+        ) : null}
+        {preferences.topbarShowProfile ? (
+          <button type="button" className={styles.profilePill} title={t('profile.manageAccounts')} onClick={() => openModal('profiles')}>
+            <Users size={12} />
+            <span className={styles.profilePillLabel}>{activeProfile?.name ?? t('profile.localAccount')}</span>
+          </button>
+        ) : null}
+        {preferences.topbarShowClaudeUsage && claudeUsage !== null ? (
+          <span className={`${styles.usagePill} ${styles.claudeUsage}`} style={{ '--pill-color': usagePillColor(claudeUsage.five_hour.utilization) } as React.CSSProperties} title={buildClaudeTooltip(claudeUsage)}>
+            <ClaudeIcon size={13} />
+            <span>{claudeUsage.five_hour.utilization.toFixed(0)}%</span>
+          </span>
+        ) : null}
+        {preferences.topbarShowCodexUsage && codexUsage !== null ? (
+          <span className={`${styles.usagePill} ${styles.codexUsage}`} style={{ '--pill-color': usagePillColor(codexUsage.primary.used_percent) } as React.CSSProperties} title={t('ui.titlebar.codexUsageTooltip', { primary: codexUsage.primary.used_percent.toFixed(0), secondary: codexUsage.secondary.used_percent.toFixed(0) })}>
+            <CodexIcon size={13} />
+            <span>{codexUsage.primary.used_percent.toFixed(0)}%</span>
+          </span>
+        ) : null}
+        {preferences.topbarShowMemory && ramMb !== null ? (
+          <button type="button" className={styles.ramPill} title={t('ui.titlebar.openMemoryAnalytics')} onClick={() => openModal('memoryAnalytics')}>
+            {ramMb.toFixed(0)} MB
+          </button>
+        ) : null}
+        <button type="button" className={styles.editWidgets} title={t('ui.titlebar.customize')} aria-label={t('ui.titlebar.customize')} onClick={() => openModal('topbarSettings')}>
+          <Pencil size={12} />
         </button>
-      ) : null}
+      </div>
       <button
         type="button"
         className={styles.windowBtn}
@@ -418,6 +428,14 @@ export function TitleBar() {
       >
         <X size={14} />
       </button>
+      {tabMenu ? (
+        <ContextMenu
+          x={tabMenu.x}
+          y={tabMenu.y}
+          items={tabMenu.items}
+          onClose={() => setTabMenu(null)}
+        />
+      ) : null}
     </div>
   )
 }

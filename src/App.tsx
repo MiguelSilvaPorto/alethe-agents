@@ -3,10 +3,12 @@ import { Bell, X } from 'lucide-react'
 import { lazy, Suspense, type CSSProperties, useEffect } from 'react'
 
 import { AgentIcon } from './components/icons/AgentIcons'
+import { ErrorBoundary } from './components/ErrorBoundary'
 import { FocusOverlay } from './components/FocusOverlay'
 import { MainMenu } from './components/MainMenu'
 import { ProjectSidebar } from './components/ProjectSidebar'
 import { TitleBar } from './components/TitleBar'
+import { TokenHud } from './components/TokenHud'
 import { WorkspaceView } from './components/WorkspaceView'
 import { FindJumpModal } from './components/modals/FindJumpModal'
 import { EditGroupModal } from './components/modals/EditGroupModal'
@@ -18,11 +20,17 @@ import { NewTerminalModal } from './components/modals/NewTerminalModal'
 import { OnboardingModal } from './components/modals/OnboardingModal'
 import { ProfilesModal } from './components/modals/ProfilesModal'
 import { PreferencesModal } from './components/modals/PreferencesModal'
+import { SyncModal } from './components/modals/SyncModal'
 import { SuspendGroupModal } from './components/modals/SuspendGroupModal'
 import { ThemePickerModal } from './components/modals/ThemePickerModal'
+import { TopbarSettingsModal } from './components/modals/TopbarSettingsModal'
 import { WelcomeModal } from './components/modals/WelcomeModal'
 import { useKeybindings } from './hooks/useKeybindings'
 import { useDiscordPresence } from './hooks/useDiscordPresence'
+import { startActivityTracker } from './lib/activityTracker'
+import { intlLocale, translate } from './lib/i18n'
+import { setMaxConcurrentSpawns } from './lib/spawnQueue'
+import { getLastCrashReport } from './lib/tauri'
 import { useProjectsStore } from './stores/projectsStore'
 import { type InAppToast, useUiStore } from './stores/uiStore'
 import styles from './App.module.css'
@@ -111,6 +119,7 @@ export default function App() {
   const uiTheme = useProjectsStore((s) => s.preferences.uiTheme)
   const uiZoom = useProjectsStore((s) => s.preferences.uiZoom)
   const language = useProjectsStore((s) => s.preferences.language)
+  const spawnConcurrency = useProjectsStore((s) => s.preferences.spawnConcurrency)
   const activeView = useUiStore((s) => s.activeView)
   const openModal = useUiStore((s) => s.openModal)
   const sidebarVisible = useUiStore((s) => s.sidebarVisible)
@@ -129,6 +138,10 @@ export default function App() {
   useEffect(() => {
     document.documentElement.lang = language === 'pt-BR' ? 'pt-BR' : 'en'
   }, [language])
+
+  useEffect(() => {
+    setMaxConcurrentSpawns(spawnConcurrency)
+  }, [spawnConcurrency])
 
   useEffect(() => {
     if (!hydrated) return
@@ -155,6 +168,32 @@ export default function App() {
     useUiStore.getState().setActiveView(preferences.alwaysStartOnHome ? 'home' : 'workspace')
   }, [hydrated])
 
+  useEffect(() => {
+    if (!hydrated) return
+    return startActivityTracker()
+  }, [hydrated])
+
+  // Se a sessão anterior não saiu limpa (crash/OOM/kill), avisa com o estado de
+  // memória de quando caiu — diagnóstico de "o que matou o app".
+  useEffect(() => {
+    if (!hydrated) return
+    void getLastCrashReport()
+      .then((report) => {
+        if (!report) return
+        const lang = useProjectsStore.getState().preferences.language
+        const when = new Date(report.last_heartbeat_ms || report.started_at_ms)
+        useUiStore.getState().pushToast({
+          title: translate(lang, 'crash.uncleanTitle'),
+          body: translate(lang, 'crash.uncleanBody', {
+            total: Math.round(report.total_mb),
+            procs: report.process_count,
+            time: when.toLocaleTimeString(intlLocale(lang)),
+          }),
+        })
+      })
+      .catch(() => {})
+  }, [hydrated])
+
   if (!hydrated) {
     return <LoadingScreen />
   }
@@ -165,19 +204,22 @@ export default function App() {
         <TitleBar />
         <div style={{ display: 'flex', flex: 1, minHeight: 0 }}>
           {sidebarVisible ? <ProjectSidebar /> : null}
-          <Suspense fallback={<LoadingScreen />}>
-            {activeView === 'home' ? (
-              <HomeView />
-            ) : activeView === 'agentCanvas' ? (
-              <AgentCanvasPOC />
-            ) : (
-              <WorkspaceView />
-            )}
-          </Suspense>
+          <ErrorBoundary label="view">
+            <Suspense fallback={<LoadingScreen />}>
+              {activeView === 'home' ? (
+                <HomeView />
+              ) : activeView === 'agentCanvas' ? (
+                <AgentCanvasPOC />
+              ) : (
+                <WorkspaceView />
+              )}
+            </Suspense>
+          </ErrorBoundary>
         </div>
       </div>
       <FocusOverlay />
       <MainMenu />
+      <ErrorBoundary label="modals">
       <NewProjectModal />
       <NewGroupModal />
       <EditGroupModal />
@@ -186,6 +228,7 @@ export default function App() {
       <NewSubTabModal />
       <PreferencesModal />
       <ProfilesModal />
+      <SyncModal />
       <FindJumpModal />
       <OnboardingModal />
       <WelcomeModal />
@@ -201,7 +244,10 @@ export default function App() {
         </Suspense>
       ) : null}
       <ThemePickerModal />
+      <TopbarSettingsModal />
+      </ErrorBoundary>
       <InAppNotifications />
+      {activeView === 'agentCanvas' ? <TokenHud /> : null}
     </>
   )
 }

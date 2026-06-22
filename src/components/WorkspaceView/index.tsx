@@ -5,6 +5,7 @@ import {
   useSensors,
   type DragEndEvent,
 } from '@dnd-kit/core'
+import { FolderPlus, TerminalSquare } from 'lucide-react'
 import { Group as PanelGroup, Panel, Separator } from 'react-resizable-panels'
 import { useEffect, useMemo } from 'react'
 
@@ -22,6 +23,7 @@ import type {
   Terminal,
   WorkspaceContainer,
 } from '../../lib/types'
+import { EmptyState } from '../EmptyState/EmptyState'
 import { PaneArea } from './PaneArea'
 import { ProjectContainer } from './ProjectContainer'
 import styles from './WorkspaceView.module.css'
@@ -58,8 +60,9 @@ export function WorkspaceView() {
   const setProjectGridLayout = useProjectsStore((s) => s.setProjectGridLayout)
   const activeProject = useProjectsStore(selectActiveProject)
   const openModal = useUiStore((s) => s.openModal_)
-  const activeGroupTabId = useUiStore((s) => s.activeGroupTabId)
-  const setActiveGroupTab = useUiStore((s) => s.setActiveGroupTab)
+  const activeGroupTabId = useProjectsStore((s) => s.workspace.activeGroupId)
+  const focusedTerminalId = useProjectsStore((s) => s.workspace.focusedTerminalId)
+  const requestPaneFocus = useUiStore((s) => s.requestPaneFocus)
 
   const projectsById = useMemo(
     () => new Map(projects.map((p) => [p.id, p])),
@@ -79,11 +82,9 @@ export function WorkspaceView() {
   )
 
   useEffect(() => {
-    if (activeGroupTabId === null) return
-    const projectIds = collectGroupProjectIds(activeGroupTabId, groups)
-    const hasOpenContainer = allContainers.some((c) => projectIds.has(c.projectId))
-    if (!hasOpenContainer) setActiveGroupTab(null)
-  }, [activeGroupTabId, allContainers, groups, setActiveGroupTab])
+    if (!focusedTerminalId) return
+    requestPaneFocus(focusedTerminalId)
+  }, [focusedTerminalId, requestPaneFocus])
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
@@ -524,35 +525,45 @@ function NoWorkspace({
   const openContainerWithAllPanes = useProjectsStore((s) => s.openContainerWithAllPanes)
   if (!project) {
     return (
-      <div className={styles.empty}>
-        <p>{t('ws.createProjectToStart')}</p>
-        <button type="button" className={styles.cta} onClick={onAddTerminal}>
-          {t('ws.createProject')}
-        </button>
+      <div className={styles.emptyShell}>
+        <EmptyState
+          icon={<FolderPlus size={22} />}
+          title={t('ws.emptyProjectTitle')}
+          description={t('ws.emptyProjectDesc')}
+          primaryAction={{
+            label: t('ws.emptyProjectAction'),
+            onClick: onAddTerminal,
+          }}
+        />
       </div>
     )
   }
   if (project.terminals.length === 0) {
     return (
-      <div className={styles.empty}>
-        <p>{t('ws.noTerminalsInProject')}</p>
-        <button type="button" className={styles.cta} onClick={onAddTerminal}>
-          {t('ws.createFirstTerminal')}
-        </button>
+      <div className={styles.emptyShell}>
+        <EmptyState
+          icon={<TerminalSquare size={22} />}
+          title={t('ws.emptyTerminalTitle')}
+          description={t('ws.emptyTerminalDesc')}
+          primaryAction={{
+            label: t('ws.emptyTerminalAction'),
+            onClick: onAddTerminal,
+          }}
+        />
       </div>
     )
   }
   return (
-    <div className={styles.empty}>
-      <p>{t('ws.noContainerOpen')}</p>
-      <p className={styles.dim}>{t('ws.terminalsAvailable', { count: project.terminals.length })}</p>
-      <button
-        type="button"
-        className={styles.cta}
-        onClick={() => openContainerWithAllPanes(project.id)}
-      >
-        {t('ws.openAll')}
-      </button>
+    <div className={styles.emptyShell}>
+      <EmptyState
+        icon={<TerminalSquare size={22} />}
+        title={t('ws.emptyContainerTitle')}
+        description={t('ws.emptyContainerDesc', { count: project.terminals.length })}
+        primaryAction={{
+          label: t('ws.emptyContainerAction'),
+          onClick: () => openContainerWithAllPanes(project.id),
+        }}
+      />
     </div>
   )
 }

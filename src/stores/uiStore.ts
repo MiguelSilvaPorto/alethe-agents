@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import type { ClaudeUsage, MemoryStats } from '../lib/tauri'
+import type { ClaudeUsage, CodexUsage, MemoryStats } from '../lib/tauri'
 import type { AgentType } from '../lib/types'
 
 /**
@@ -24,6 +24,8 @@ type ModalKind =
   | 'memoryAnalytics'
   | 'themePicker'
   | 'profiles'
+  | 'sync'
+  | 'topbarSettings'
   | null
 
 export type ActiveView = 'home' | 'workspace' | 'agentCanvas'
@@ -54,16 +56,18 @@ type UiState = {
   memoryStats: MemoryStats | null
   memoryHistory: MemorySample[]
   claudeUsage: ClaudeUsage | null
+  codexUsage: CodexUsage | null
   /** ID do terminal em focus mode (overlay fullscreen blur). null = sem focus. */
   focusedTerminalId: string | null
   /** Pulso pra requisitar foco num pane específico (sidebar click). */
   focusRequest: { terminalId: string; ts: number } | null
+  activeTerminal: { projectId: string; terminalId: string } | null
   /** View principal sendo exibida no main. */
   activeView: ActiveView
-  /** Grupo filtrado na workspace via tabs da topbar. null = todos. */
-  activeGroupTabId: string | null
   /** POC do agent canvas: pasta escolhida + id do PTY do claude embutido. */
   agentCanvasSession: { folder: string; ptyId: string } | null
+  /** Teto de gasto (USD) da sessão do canvas. null = sem teto. */
+  agentCanvasBudgetUsd: number | null
   /** Notificações in-app efêmeras (banner). */
   toasts: InAppToast[]
   /** Histórico recente de notificações (não some com o banner) — usado na Home. */
@@ -77,12 +81,14 @@ type UiState = {
   addMemorySample: (value: MemoryStats) => void
   clearMemoryHistory: () => void
   setClaudeUsage: (value: ClaudeUsage | null) => void
+  setCodexUsage: (value: CodexUsage | null) => void
   setFocusedTerminal: (id: string | null) => void
   requestPaneFocus: (terminalId: string) => void
+  setActiveTerminal: (projectId: string, terminalId: string) => void
   setActiveView: (v: ActiveView) => void
   toggleHome: () => void
-  setActiveGroupTab: (groupId: string | null) => void
   setAgentCanvasSession: (session: { folder: string; ptyId: string } | null) => void
+  setAgentCanvasBudget: (usd: number | null) => void
   pushToast: (toast: {
     title: string
     body: string
@@ -103,11 +109,13 @@ export const useUiStore = create<UiState>((set) => ({
   memoryStats: null,
   memoryHistory: [],
   claudeUsage: null,
+  codexUsage: null,
   focusedTerminalId: null,
   focusRequest: null,
+  activeTerminal: null,
   activeView: 'workspace',
-  activeGroupTabId: null,
   agentCanvasSession: null,
+  agentCanvasBudgetUsd: null,
   toasts: [],
   notifications: [],
 
@@ -124,13 +132,16 @@ export const useUiStore = create<UiState>((set) => ({
     })),
   clearMemoryHistory: () => set({ memoryHistory: [] }),
   setClaudeUsage: (value) => set({ claudeUsage: value }),
+  setCodexUsage: (value) => set({ codexUsage: value }),
   setFocusedTerminal: (id) => set({ focusedTerminalId: id }),
   requestPaneFocus: (terminalId) => set({ focusRequest: { terminalId, ts: Date.now() } }),
-  setActiveView: (v) => set({ activeView: v }),
+  setActiveTerminal: (projectId, terminalId) => set({ activeTerminal: { projectId, terminalId } }),
+  setActiveView: (v) =>
+    set((s) => (s.activeView === v ? s : { activeView: v })),
   toggleHome: () =>
     set((s) => ({ activeView: s.activeView === 'home' ? 'workspace' : 'home' })),
-  setActiveGroupTab: (groupId) => set({ activeGroupTabId: groupId }),
   setAgentCanvasSession: (session) => set({ agentCanvasSession: session }),
+  setAgentCanvasBudget: (usd) => set({ agentCanvasBudgetUsd: usd }),
   pushToast: ({ title, body, agent, silent }) =>
     set((s) => {
       const entry: InAppToast = {

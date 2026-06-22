@@ -1,11 +1,18 @@
 import { useDraggable, useDroppable } from '@dnd-kit/core'
-import { ChevronRight, GripVertical, Maximize2, Minimize2, Minus } from 'lucide-react'
+import {
+  ChevronRight,
+  GripVertical,
+  Maximize2,
+  Minimize2,
+  Minus,
+  TerminalSquare,
+} from 'lucide-react'
 import { memo, useMemo } from 'react'
 
 import type { Group, Project, Terminal, WorkspaceContainer } from '../../lib/types'
 import { useT } from '../../lib/i18n'
 import { useProjectsStore } from '../../stores/projectsStore'
-import { useUiStore } from '../../stores/uiStore'
+import { EmptyState } from '../EmptyState/EmptyState'
 import { PaneArea } from './PaneArea'
 import styles from './ProjectContainer.module.css'
 
@@ -28,6 +35,7 @@ export const ProjectContainer = memo(function ProjectContainer({
   const setFullscreen = useProjectsStore((s) => s.setFullscreenContainer)
   const setWorkspaceFlat = useProjectsStore((s) => s.setWorkspaceFlat)
   const closeContainer = useProjectsStore((s) => s.closeContainer)
+  const openContainerWithAllPanes = useProjectsStore((s) => s.openContainerWithAllPanes)
   const setWorkspaceGridLayout = useProjectsStore((s) => s.setWorkspaceGridLayout)
   const setGroupGridLayout = useProjectsStore((s) => s.setGroupGridLayout)
   const workspaceGridLayout = useProjectsStore(
@@ -38,7 +46,6 @@ export const ProjectContainer = memo(function ProjectContainer({
     if (group.layoutMode !== 'grid' || !group.gridLayout) return null
     return { groupId: group.id, layout: group.gridLayout }
   }, [group])
-  const setActiveGroupTab = useUiStore((s) => s.setActiveGroupTab)
 
   // Resize LIVRE: arrasta o canto inferior-direito pra ajustar a proporção
   // `fr` da última col/row que esse container ocupa, roubando da col/row
@@ -229,7 +236,6 @@ export const ProjectContainer = memo(function ProjectContainer({
                 return
               }
               setWorkspaceFlat(false)
-              setActiveGroupTab(project.groupId)
               setFullscreen(project.id)
             }}
             title={isFullscreen ? t('ws.exitFullscreen') : t('ws.containerFullscreen')}
@@ -253,7 +259,18 @@ export const ProjectContainer = memo(function ProjectContainer({
       </div>
       <div className={styles.body}>
         {terminals.length === 0 ? (
-          <div className={styles.empty}>{t('ws.noPanesOpen')}</div>
+          <div className={styles.emptyShell}>
+            <EmptyState
+              compact
+              icon={<TerminalSquare size={18} />}
+              title={t('ws.panesEmptyTitle')}
+              description={t('ws.panesEmptyDesc')}
+              primaryAction={{
+                label: t('ws.panesEmptyAction'),
+                onClick: () => openContainerWithAllPanes(project.id),
+              }}
+            />
+          </div>
         ) : (
           <PaneArea
             projectId={project.id}

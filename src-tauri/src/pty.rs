@@ -32,6 +32,16 @@ impl ScrollbackBuffer {
     }
 }
 
+/// Quantos bytes do início de `buf` formam UTF-8 válido. O resto (0–3 bytes) é
+/// a cauda de um caractere multibyte que o `read()` do PTY partiu no limite do
+/// buffer — esses bytes esperam a próxima leitura pra não virarem `�`.
+fn valid_utf8_prefix_len(buf: &[u8]) -> usize {
+    match std::str::from_utf8(buf) {
+        Ok(s) => s.len(),
+        Err(error) => error.valid_up_to(),
+    }
+}
+
 pub struct PtySession {
     pub master: Box<dyn MasterPty + Send>,
     // writer fica em Arc<Mutex> pra write_pty poder soltar o lock global de
@@ -178,7 +188,11 @@ pub fn spawn_pty(
     let initial_warning = cwd_warning.clone();
 
     thread::spawn(move || {
-        let mut buffer = [0_u8; 8192];
+        // 32 KiB: menos syscalls e menos eventos IPC sob saída pesada (builds,
+        // cat de arquivo grande) sem custo de latência pra outputs pequenos.
+        let mut buffer = [0_u8; 32 * 1024];
+        // Cauda de um caractere UTF-8 multibyte partido entre duas leituras.
+        let mut carry: Vec<u8> = Vec::new();
 
         if let Some(warning) = initial_warning {
             let _ = event_app.emit(&event_name, &warning);
@@ -194,23 +208,68 @@ pub fn spawn_pty(
             match reader.read(&mut buffer) {
                 Ok(0) => break,
                 Ok(count) => {
-                    // Emit PRIMEIRO — user vê o echo na hora. Sem disk I/O no
-                    // caminho da tecla. push_scrollback agora faz fs::write
-                    // off-thread, então não bloqueia o próximo read.
-                    let data = String::from_utf8_lossy(&buffer[..count]);
-                    let _ = event_app.emit(&event_name, data.as_ref());
+                    // Scrollback recebe os bytes crus desta leitura (sempre
+                    // corretos — só o emit precisa de fronteira de caractere).
                     let _ = push_scrollback(
                         &scrollback_app,
                         &scrollback_id,
                         &thread_scrollback,
                         &buffer[..count],
                     );
+
+                    // Emit PRIMEIRO o que é UTF-8 completo — user vê o echo na
+                    // hora, sem disk I/O no caminho da tecla. Caractere partido
+                    // no limite do read fica em `carry` pro próximo ciclo.
+                    if carry.is_empty() {
+                        // Caminho rápido (caso comum): nada pendente, zero alloc.
+                        let valid = valid_utf8_prefix_len(&buffer[..count]);
+                        if valid > 0 {
+                            // SAFETY: buffer[..valid] é UTF-8 válido por construção.
+                            let text = unsafe { std::str::from_utf8_unchecked(&buffer[..valid]) };
+                            let _ = event_app.emit(&event_name, text);
+                        }
+                        if valid < count {
+                            carry.extend_from_slice(&buffer[valid..count]);
+                        }
+                    } else {
+                        carry.extend_from_slice(&buffer[..count]);
+                        let valid = valid_utf8_prefix_len(&carry);
+                        if valid > 0 {
+                            // SAFETY: carry[..valid] é UTF-8 válido por construção.
+                            let text = unsafe { std::str::from_utf8_unchecked(&carry[..valid]) };
+                            let _ = event_app.emit(&event_name, text);
+                            carry.drain(..valid);
+                        }
+                    }
+
+                    // `carry` só deve guardar a cauda de UM caractere (≤3 bytes).
+                    // Se passar disso, são bytes inválidos que nunca completam:
+                    // emite lossy (mostra �) e zera pra não vazar nem travar.
+                    if carry.len() > 3 {
+                        let lossy = String::from_utf8_lossy(&carry).into_owned();
+                        let _ = event_app.emit(&event_name, lossy.as_str());
+                        carry.clear();
+                    }
                 }
                 Err(_) => break,
             }
         }
 
-        let _ = flush_scrollback(&scrollback_app, &scrollback_id, &thread_scrollback);
+        // Flush de qualquer cauda restante no fim do stream.
+        if !carry.is_empty() {
+            let lossy = String::from_utf8_lossy(&carry).into_owned();
+            let _ = event_app.emit(&event_name, lossy.as_str());
+        }
+
+        // PTY morreu: garante o scrollback no disco e LIBERA o buffer em RAM (até
+        // 4 MiB). A sessão fica no HashMap; attach_pty recarrega do disco se preciso.
+        // Só libera se o flush deu certo, pra nunca perder dados não persistidos.
+        if flush_scrollback(&scrollback_app, &scrollback_id, &thread_scrollback).is_ok() {
+            if let Ok(mut buffer) = thread_scrollback.lock() {
+                buffer.data = VecDeque::new();
+                buffer.dirty = false;
+            }
+        }
 
         let code = thread_child
             .lock()
@@ -279,27 +338,39 @@ pub fn restart_pty(
 
 #[tauri::command]
 pub fn attach_pty(
+    app: AppHandle,
     sessions: State<'_, PtySessions>,
     id: String,
     max_bytes: Option<usize>,
 ) -> Result<String, String> {
-    let sessions = sessions
-        .lock()
-        .map_err(|_| "PTY sessions lock poisoned".to_string())?;
-    let session = sessions
-        .get(&id)
-        .ok_or_else(|| format!("PTY not found: {id}"))?;
-    let buffer = session
-        .scrollback
-        .lock()
-        .map_err(|_| "PTY scrollback lock poisoned".to_string())?;
-
     let max_bytes = max_bytes.unwrap_or(512 * 1024).max(16 * 1024);
-    let skip = buffer.data.len().saturating_sub(max_bytes);
-    Ok(
-        String::from_utf8_lossy(&buffer.data.iter().skip(skip).copied().collect::<Vec<_>>())
-            .to_string(),
-    )
+
+    // Caminho comum: serve do buffer em memória.
+    {
+        let sessions = sessions
+            .lock()
+            .map_err(|_| "PTY sessions lock poisoned".to_string())?;
+        let session = sessions
+            .get(&id)
+            .ok_or_else(|| format!("PTY not found: {id}"))?;
+        let mut buffer = session
+            .scrollback
+            .lock()
+            .map_err(|_| "PTY scrollback lock poisoned".to_string())?;
+        if !buffer.data.is_empty() {
+            // make_contiguous + slice evita a cópia extra do iter().skip().collect().
+            let slice = buffer.data.make_contiguous();
+            let start = slice.len().saturating_sub(max_bytes);
+            return Ok(String::from_utf8_lossy(&slice[start..]).into_owned());
+        }
+    }
+
+    // Buffer vazio: PTY recém-criado (sem output) ou PTY morto cujo buffer foi
+    // liberado. Em ambos os casos o disco tem a verdade (vazio ou o scrollback final).
+    let disk = load_scrollback(&app, &id)?;
+    let bytes: Vec<u8> = disk.into_iter().collect();
+    let start = bytes.len().saturating_sub(max_bytes);
+    Ok(String::from_utf8_lossy(&bytes[start..]).into_owned())
 }
 
 #[tauri::command]
@@ -401,6 +472,26 @@ pub fn load_scrollback(app: &AppHandle, id: &str) -> Result<VecDeque<u8>, String
     Ok(data.into())
 }
 
+/// Writer global de scrollback: uma única thread em background recebe
+/// `(path, bytes)` e escreve. Evita spawnar uma thread a cada flush (250ms por
+/// PTY ativo). Vive pela vida do processo — sem teardown por PTY, sem vazar thread.
+fn scrollback_writer() -> &'static std::sync::mpsc::Sender<(PathBuf, Vec<u8>)> {
+    static WRITER: std::sync::OnceLock<std::sync::mpsc::Sender<(PathBuf, Vec<u8>)>> =
+        std::sync::OnceLock::new();
+    WRITER.get_or_init(|| {
+        let (tx, rx) = std::sync::mpsc::channel::<(PathBuf, Vec<u8>)>();
+        thread::spawn(move || {
+            while let Ok((path, bytes)) = rx.recv() {
+                if let Some(parent) = path.parent() {
+                    let _ = fs::create_dir_all(parent);
+                }
+                let _ = fs::write(&path, &bytes);
+            }
+        });
+        tx
+    })
+}
+
 pub fn push_scrollback(
     app: &AppHandle,
     id: &str,
@@ -437,12 +528,8 @@ pub fn push_scrollback(
     // latência visível de digitação (10-50ms por flush no Windows) propagando
     // pra TODOS os terminais com qualquer atividade.
     let path = scrollback_path(app, id)?;
-    thread::spawn(move || {
-        if let Some(parent) = path.parent() {
-            let _ = fs::create_dir_all(parent);
-        }
-        let _ = fs::write(path, bytes);
-    });
+    // Envia pro writer global em vez de spawnar uma thread por flush.
+    let _ = scrollback_writer().send((path, bytes));
     Ok(())
 }
 
@@ -478,6 +565,43 @@ pub fn delete_scrollback(app: &AppHandle, id: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Remove `.bin` órfãos — scrollback de terminais que não existem mais no
+/// projects.json. Roda no startup, ANTES de qualquer spawn (sem corrida).
+/// Conservador: só apaga se o id NÃO aparecer em nenhum lugar do texto do
+/// projects.json (ids são nanoids; colisão com texto não-relacionado é
+/// improvável). Se o projects.json não puder ser lido, não apaga nada.
+pub fn cleanup_orphan_scrollback(app: &AppHandle) {
+    let Ok(dir) = scrollback_dir(app) else {
+        return;
+    };
+    if !dir.is_dir() {
+        return;
+    }
+    let projects_text = match crate::paths::projects_file_path(app) {
+        Ok(path) => fs::read_to_string(&path).unwrap_or_default(),
+        Err(_) => return,
+    };
+    // Vazio = sem projects.json legível → melhor não arriscar apagar nada.
+    if projects_text.is_empty() {
+        return;
+    }
+    let Ok(entries) = fs::read_dir(&dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("bin") {
+            continue;
+        }
+        let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        if !projects_text.contains(stem) {
+            let _ = fs::remove_file(&path);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -485,5 +609,40 @@ mod tests {
     #[test]
     fn scrollback_cap_keeps_long_agent_chats() {
         assert!(SCROLLBACK_CAP_BYTES >= 4 * 1024 * 1024);
+    }
+
+    #[test]
+    fn valid_utf8_prefix_passes_complete_ascii_and_multibyte() {
+        assert_eq!(valid_utf8_prefix_len(b"hello"), 5);
+        // "café" — o "é" são 2 bytes (0xC3 0xA9), todos presentes.
+        let cafe = "café".as_bytes();
+        assert_eq!(valid_utf8_prefix_len(cafe), cafe.len());
+        // Box-drawing "─" (3 bytes) completo.
+        let line = "─".as_bytes();
+        assert_eq!(valid_utf8_prefix_len(line), 3);
+    }
+
+    #[test]
+    fn valid_utf8_prefix_stops_before_split_multibyte() {
+        // Primeiro byte de "é" sozinho (read partiu aqui) → 0 bytes válidos.
+        assert_eq!(valid_utf8_prefix_len(&[0xC3]), 0);
+        // "a" + primeiro byte de "é" → só o "a" é válido.
+        assert_eq!(valid_utf8_prefix_len(&[b'a', 0xC3]), 1);
+        // Emoji 😀 (4 bytes) com só os 2 primeiros → 0 válidos.
+        let grin = "😀".as_bytes();
+        assert_eq!(valid_utf8_prefix_len(&grin[..2]), 0);
+    }
+
+    #[test]
+    fn valid_utf8_prefix_carry_reassembles_split_char() {
+        // Simula o split: "x" + "é" partido entre dois reads.
+        let full = "xé".as_bytes(); // [b'x', 0xC3, 0xA9]
+        let first = &full[..2]; // "x" + 0xC3
+        let valid = valid_utf8_prefix_len(first);
+        assert_eq!(valid, 1); // só "x" emitido
+        // carry = [0xC3]; chega o resto do próximo read.
+        let mut carry = first[valid..].to_vec();
+        carry.extend_from_slice(&full[2..]); // + 0xA9
+        assert_eq!(valid_utf8_prefix_len(&carry), carry.len()); // "é" completo
     }
 }

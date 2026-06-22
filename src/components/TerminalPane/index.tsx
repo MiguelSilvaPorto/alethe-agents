@@ -19,6 +19,7 @@ import { memo, useEffect, useMemo, useRef, useState } from 'react'
 
 import { useGridResize } from '../../hooks/useGridResize'
 import { useT } from '../../lib/i18n'
+import { buildAgentLaunch } from '../../lib/sessionLaunch'
 import { useProjectsStore } from '../../stores/projectsStore'
 import { useTerminalsStore } from '../../stores/terminalsStore'
 import { useUiStore } from '../../stores/uiStore'
@@ -84,10 +85,12 @@ export const TerminalPane = memo(function TerminalPane({
   const setTerminalDisabled = useProjectsStore((s) => s.setTerminalDisabled)
   const deleteTerminal = useProjectsStore((s) => s.deleteTerminal)
   const setSubTabPtyId = useProjectsStore((s) => s.setSubTabPtyId)
+  const setSubTabSessionId = useProjectsStore((s) => s.setSubTabSessionId)
   const setSubTabCompletionUnread = useProjectsStore((s) => s.setSubTabCompletionUnread)
   const setProjectGridLayout = useProjectsStore((s) => s.setProjectGridLayout)
   const openModal = useUiStore((s) => s.openModal_)
   const setFocusedTerminal = useUiStore((s) => s.setFocusedTerminal)
+  const setActiveTerminal = useUiStore((s) => s.setActiveTerminal)
   const terminalTheme = useProjectsStore(
     (s) => s.preferences.terminalTheme ?? s.preferences.uiTheme,
   )
@@ -125,6 +128,14 @@ export const TerminalPane = memo(function TerminalPane({
   const onRestart = async () => {
     if (!activeTab?.ptyId) return
     const ptyId = activeTab.ptyId
+    const launch = buildAgentLaunch(
+      activeTab.type,
+      activeTab.extraArgs ?? [],
+      activeTab.sessionId,
+    )
+    if (launch.sessionId && launch.sessionId !== activeTab.sessionId) {
+      setSubTabSessionId(projectId, terminal.id, activeTab.id, launch.sessionId)
+    }
     // Marca início do restart pra ignorar o exit event do PTY antigo (chega async).
     useTerminalsStore.getState().beginRestart(ptyId)
     try {
@@ -134,6 +145,7 @@ export const TerminalPane = memo(function TerminalPane({
         rows: 24,
         command: activeTab.type === 'shell' ? undefined : activeTab.type,
         cwd: activeTab.cwd || undefined,
+        extraArgs: launch.args,
       })
       window.dispatchEvent(new CustomEvent('alethe:terminal-resize-request', { detail: { ptyId } }))
     } catch (err) {
@@ -193,6 +205,7 @@ export const TerminalPane = memo(function TerminalPane({
     <div
       ref={setRefs}
       data-pane-box="1"
+      onPointerDown={() => setActiveTerminal(projectId, terminal.id)}
       className={`${styles.pane} ${isFocusMode ? styles.paneFocus : ''} ${terminal.disabled ? styles.disabled : ''} ${dragging ? styles.dragging : ''} ${dropTarget ? styles.dropTarget : ''}`}
     >
       <header className={styles.header}>
@@ -370,14 +383,21 @@ export const TerminalPane = memo(function TerminalPane({
             <>
               <XTermView
                 key={activeTab.id}
+                projectId={projectId}
                 ptyId={activeTab.ptyId ?? activeTab.id}
                 command={activeTab.type === 'shell' ? null : activeTab.type}
                 cwd={activeTab.cwd || null}
                 extraArgs={activeTab.extraArgs}
+                sessionId={activeTab.sessionId}
                 terminalTheme={terminalTheme}
                 onSpawned={(id) => {
                   if (activeTab.ptyId !== id) {
                     setSubTabPtyId(projectId, terminal.id, activeTab.id, id)
+                  }
+                }}
+                onSessionId={(sessionId) => {
+                  if (activeTab.sessionId !== sessionId) {
+                    setSubTabSessionId(projectId, terminal.id, activeTab.id, sessionId)
                   }
                 }}
                 onAgentComplete={() =>

@@ -5,12 +5,12 @@ const TTL_MS = 5 * 60_000
 let cached: { days: number; value: ActivityDay[]; at: number } | null = null
 let inFlight: Promise<ActivityDay[]> | null = null
 
-export function getCachedClaudeActivity(days: number): Promise<ActivityDay[]> {
+export function getCachedClaudeActivity(days: number, force = false): Promise<ActivityDay[]> {
   const now = Date.now()
-  if (cached && cached.days === days && now - cached.at < TTL_MS) {
+  if (!force && cached && cached.days === days && now - cached.at < TTL_MS) {
     return Promise.resolve(cached.value)
   }
-  if (inFlight) return inFlight
+  if (!force && inFlight) return inFlight
 
   inFlight = getClaudeActivity(days)
     .then((value) => {

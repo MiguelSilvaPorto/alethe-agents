@@ -170,12 +170,12 @@
   position: relative;
 }
 
-.empty {
+.emptyShell {
   flex: 1;
   display: grid;
   place-items: center;
-  color: var(--fg-faint);
-  font-size: 12px;
+  padding: 16px;
+  min-height: 0;
 }
 
 /* ----- collapsed: barra vertical fina ----- */

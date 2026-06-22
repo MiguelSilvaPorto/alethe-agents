@@ -3,8 +3,17 @@ import { Group, Panel, Separator } from 'react-resizable-panels'
 import { useProjectsStore } from '../../stores/projectsStore'
 import { cellStyle, gridContainerStyle, reconcileGridLayout } from '../../lib/gridLayout'
 import type { GridLayout, LayoutMode, Terminal } from '../../lib/types'
+import { MarkdownPane } from '../MarkdownPane'
 import { TerminalPane } from '../TerminalPane'
 import styles from './WorkspaceView.module.css'
+
+/** Renderiza o pane certo conforme o tipo (terminal ou markdown viewer). */
+function Pane({ projectId, terminal }: { projectId: string; terminal: Terminal }) {
+  if (terminal.kind === 'markdown') {
+    return <MarkdownPane projectId={projectId} terminal={terminal} />
+  }
+  return <TerminalPane projectId={projectId} terminal={terminal} />
+}
 
 export type PaneAreaProps = {
   projectId: string
@@ -19,7 +28,7 @@ export function PaneArea({ projectId, idPrefix, terminals, layoutMode }: PaneAre
   if (terminals.length === 1) {
     return (
       <div className={styles.singlePane}>
-        <TerminalPane projectId={projectId} terminal={terminals[0]} />
+        <Pane projectId={projectId} terminal={terminals[0]} />
       </div>
     )
   }
@@ -63,7 +72,7 @@ function GridLayoutComponent({
         if (!cell) return null
         return (
           <div key={t.id} style={cellStyle(cell)}>
-            <TerminalPane projectId={projectId} terminal={t} />
+            <Pane projectId={projectId} terminal={t} />
           </div>
         )
       })}
@@ -82,11 +91,11 @@ function AutoLayout({ projectId, idPrefix, terminals }: LayoutProps) {
     return (
       <Group orientation="horizontal" className={styles.fullSize}>
         <Panel id={`${idPrefix}-p-${terminals[0].id}`} minSize="15%">
-          <TerminalPane projectId={projectId} terminal={terminals[0]} />
+          <Pane projectId={projectId} terminal={terminals[0]} />
         </Panel>
         <Separator className={styles.sepH} />
         <Panel id={`${idPrefix}-p-${terminals[1].id}`} minSize="15%">
-          <TerminalPane projectId={projectId} terminal={terminals[1]} />
+          <Pane projectId={projectId} terminal={terminals[1]} />
         </Panel>
       </Group>
     )
@@ -125,7 +134,7 @@ function RowFragment({
     <>
       <Panel id={rowId} minSize="10%">
         {terminals.length === 1 ? (
-          <TerminalPane projectId={projectId} terminal={terminals[0]} />
+          <Pane projectId={projectId} terminal={terminals[0]} />
         ) : (
           <Group orientation="horizontal" className={styles.fullSize}>
             {terminals.map((t, i) => (
@@ -159,7 +168,7 @@ function FragmentCol({
   return (
     <>
       <Panel id={`${idPrefix}-p-${terminal.id}`} minSize="10%">
-        <TerminalPane projectId={projectId} terminal={terminal} />
+        <Pane projectId={projectId} terminal={terminal} />
       </Panel>
       {isLast ? null : <Separator className={styles.sepH} />}
     </>
@@ -180,7 +189,7 @@ function FragmentRow({
   return (
     <>
       <Panel id={`${idPrefix}-p-${terminal.id}`} minSize="10%">
-        <TerminalPane projectId={projectId} terminal={terminal} />
+        <Pane projectId={projectId} terminal={terminal} />
       </Panel>
       {isLast ? null : <Separator className={styles.sepV} />}
     </>
@@ -192,7 +201,7 @@ function SpotlightLayout({ projectId, idPrefix, terminals }: LayoutProps) {
   return (
     <Group orientation="horizontal" className={styles.fullSize}>
       <Panel id={`${idPrefix}-spot-main-${main.id}`} defaultSize="65%" minSize="25%">
-        <TerminalPane projectId={projectId} terminal={main} />
+        <Pane projectId={projectId} terminal={main} />
       </Panel>
       <Separator className={styles.sepH} />
       <Panel id={`${idPrefix}-spot-stack`} defaultSize="35%" minSize="15%">
@@ -231,7 +240,7 @@ function SidebarLayout({ projectId, idPrefix, terminals }: LayoutProps) {
       </Panel>
       <Separator className={styles.sepH} />
       <Panel id={`${idPrefix}-side-main-${main.id}`} defaultSize="78%" minSize="40%">
-        <TerminalPane projectId={projectId} terminal={main} />
+        <Pane projectId={projectId} terminal={main} />
       </Panel>
     </Group>
   )

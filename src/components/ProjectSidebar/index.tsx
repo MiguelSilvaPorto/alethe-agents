@@ -10,16 +10,20 @@ import {
 import {
   ChevronDown,
   ChevronRight,
+  Folder,
   FolderPlus,
   Grid3x3,
   Home,
   Layout,
   LayoutGrid,
+  MoreHorizontal,
+  FileText,
   Pause,
   Plus,
   Sidebar as SidebarIcon,
   type LucideIcon,
 } from 'lucide-react'
+import { open as openFileDialog } from '@tauri-apps/plugin-dialog'
 import { useMemo, useState } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 
@@ -31,6 +35,8 @@ import {
 import { useUiStore } from '../../stores/uiStore'
 import { useT } from '../../lib/i18n'
 import type { AgentType, Group, LayoutMode, Project, Terminal } from '../../lib/types'
+import { EmptyState } from '../EmptyState/EmptyState'
+import { FileExplorer } from './FileExplorer'
 import { AgentIcon } from '../icons/AgentIcons'
 import { SidebarNowPlaying } from '../SidebarNowPlaying'
 import { UserProfile } from '../UserProfile'
@@ -59,6 +65,12 @@ export function ProjectSidebar() {
   const actions = useProjectsStore(useShallow((s) => ({
     setActiveProject: s.setActiveProject,
     openGroupScope: s.openGroupScope,
+    openProjectWorkspace: s.openProjectWorkspace,
+    addProjectToWorkspace: s.addProjectToWorkspace,
+    openGroupWorkspace: s.openGroupWorkspace,
+    openTerminalWorkspace: s.openTerminalWorkspace,
+    addTerminalToWorkspace: s.addTerminalToWorkspace,
+    focusWorkspaceTerminal: s.focusWorkspaceTerminal,
     toggleProjectCollapsed: s.toggleProjectCollapsed,
     toggleGroupCollapsed: s.toggleGroupCollapsed,
     renameProject: s.renameProject,
@@ -78,15 +90,34 @@ export function ProjectSidebar() {
     reorderGroups: s.reorderGroups,
     togglePane: s.togglePane,
     setSubTabCompletionUnread: s.setSubTabCompletionUnread,
+    createMarkdownPane: s.createMarkdownPane,
   })))
 
   const requestPaneFocus = useUiStore((s) => s.requestPaneFocus)
   const openModal = useUiStore((s) => s.openModal_)
   const activeView = useUiStore((s) => s.activeView)
   const setActiveView = useUiStore((s) => s.setActiveView)
-  const setActiveGroupTab = useUiStore((s) => s.setActiveGroupTab)
-
+  const activeTerminalRef = useUiStore((s) => s.activeTerminal)
+  const setActiveTerminal = useUiStore((s) => s.setActiveTerminal)
   const [menu, setMenu] = useState<ContextMenuState>(null)
+  const [sidebarTab, setSidebarTab] = useState<'files' | 'projects'>('projects')
+  const keepHome = activeView === 'home'
+
+  const onAddMarkdownViewer = async () => {
+    if (!activeProjectId) {
+      useUiStore.getState().pushToast({
+        title: t('ui.markdown.title'),
+        body: t('ui.markdown.noActiveProject'),
+      })
+      return
+    }
+    const selected = await openFileDialog({
+      multiple: false,
+      filters: [{ name: 'Markdown', extensions: ['md', 'markdown'] }],
+    })
+    if (typeof selected !== 'string') return
+    actions.createMarkdownPane(activeProjectId, { filePath: selected })
+  }
 
   // map projectId → Set<paneIds> pra checar se cada terminal está aberto
   const openPaneSets = useMemo(() => {
@@ -99,6 +130,24 @@ export function ProjectSidebar() {
     () => new Map(projects.map((p) => [p.id, p])),
     [projects],
   )
+  const activeProject = useMemo(
+    () => projectsById.get(activeProjectId ?? '') ?? projects[0] ?? null,
+    [activeProjectId, projects, projectsById],
+  )
+  const selectedTerminal = useMemo(() => {
+    if (!activeProject) return null
+    if (activeTerminalRef?.projectId === activeProject.id) {
+      const selected = activeProject.terminals.find((terminal) => terminal.id === activeTerminalRef.terminalId)
+      if (selected) return selected
+    }
+    const activeContainer = containers.find((container) => container.projectId === activeProject.id)
+    const visible = new Set(activeContainer?.paneIds ?? [])
+    return [...activeProject.terminals]
+      .filter((terminal) => visible.size === 0 || visible.has(terminal.id))
+      .sort((a, b) => (b.lastUsedAt ?? 0) - (a.lastUsedAt ?? 0))[0] ?? null
+  }, [activeProject, activeTerminalRef, containers])
+  const selectedSubTab = selectedTerminal?.tabs.find((tab) => tab.id === selectedTerminal.activeTabId)
+    ?? selectedTerminal?.tabs[0]
 
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 4 } }))
 
@@ -186,6 +235,23 @@ export function ProjectSidebar() {
   const projectMenu = (project: Project): MenuItem[] => [
     {
       kind: 'item',
+      label: t('ui.workspace.openIndividually'),
+      onClick: () => {
+        actions.openProjectWorkspace(project.id)
+        setActiveView('workspace')
+      },
+    },
+    {
+      kind: 'item',
+      label: t('ui.workspace.addToCurrent'),
+      onClick: () => {
+        actions.addProjectToWorkspace(project.id)
+        setActiveView('workspace')
+      },
+    },
+    { kind: 'separator' },
+    {
+      kind: 'item',
       label: t('ui.sidebar.editNameColor'),
       onClick: () => openModal('editProject', { projectId: project.id }),
     },
@@ -253,6 +319,23 @@ export function ProjectSidebar() {
   ]
 
   const groupMenu = (group: Group): MenuItem[] => [
+    {
+      kind: 'item',
+      label: t('ui.workspace.openIndividually'),
+      onClick: () => {
+        actions.openGroupWorkspace(group.id, 'only')
+        setActiveView('workspace')
+      },
+    },
+    {
+      kind: 'item',
+      label: t('ui.workspace.addToCurrent'),
+      onClick: () => {
+        actions.openGroupWorkspace(group.id, 'append')
+        setActiveView('workspace')
+      },
+    },
+    { kind: 'separator' },
     {
       kind: 'item',
       label: t('ui.sidebar.editNameColor'),
@@ -345,6 +428,23 @@ export function ProjectSidebar() {
     return [
       {
         kind: 'item',
+        label: t('ui.workspace.openIndividually'),
+        onClick: () => {
+          actions.openTerminalWorkspace(projectId, term.id)
+          setActiveView('workspace')
+        },
+      },
+      {
+        kind: 'item',
+        label: t('ui.workspace.addToCurrent'),
+        onClick: () => {
+          actions.addTerminalToWorkspace(projectId, term.id)
+          setActiveView('workspace')
+        },
+      },
+      { kind: 'separator' },
+      {
+        kind: 'item',
         label: t('ui.sidebar.rename'),
         onClick: () => {
           const name = window.prompt(t('ui.sidebar.newNamePrompt'), term.name)?.trim()
@@ -375,12 +475,11 @@ export function ProjectSidebar() {
     ]
   }
 
-  const containerActions = useProjectsStore(useShallow((s) => ({
-    openFullView: s.openContainerWithAllPanes,
-    setContainerCollapsed: s.setContainerCollapsed,
-    setFullscreenContainer: s.setFullscreenContainer,
-    closeOtherContainers: s.closeOtherContainers,
-  })))
+  const activateProject = (project: Project, mode: 'open' | 'focus' = 'focus') => {
+    void mode
+    actions.openProjectWorkspace(project.id)
+    setActiveView('workspace')
+  }
 
   const renderProject = (p: Project) => (
     <ProjectNode
@@ -389,24 +488,23 @@ export function ProjectSidebar() {
       isActive={p.id === activeProjectId}
       openPanes={openPaneSets[p.id]}
       onActivate={() => {
-        containerActions.closeOtherContainers(p.id)
-        actions.setActiveProject(p.id)
-        if (p.terminals.length > 0) containerActions.openFullView(p.id)
-        containerActions.setContainerCollapsed(p.id, false)
-        const fsId = useProjectsStore.getState().preferences.fullscreenContainerId
-        if (fsId && fsId !== p.id) containerActions.setFullscreenContainer(null)
-        setActiveGroupTab(p.groupId)
-        setActiveView('workspace')
+        activateProject(p)
       }}
       onToggleCollapsed={() => actions.toggleProjectCollapsed(p.id)}
       onTerminalClick={(t) => {
-        actions.setActiveProject(p.id)
+        actions.focusWorkspaceTerminal(p.id, t.id)
+        setActiveTerminal(p.id, t.id)
         const activeTab = t.tabs.find((tab) => tab.id === t.activeTabId) ?? t.tabs[0]
         if (activeTab?.completionUnread) {
           actions.setSubTabCompletionUnread(p.id, t.id, activeTab.id, false)
         }
         requestPaneFocus(t.id)
-        setActiveGroupTab(p.groupId)
+        setActiveView('workspace')
+      }}
+      onTerminalDoubleClick={(t) => {
+        actions.openTerminalWorkspace(p.id, t.id)
+        setActiveTerminal(p.id, t.id)
+        requestPaneFocus(t.id)
         setActiveView('workspace')
       }}
       onProjectMenu={(e) =>
@@ -435,8 +533,7 @@ export function ProjectSidebar() {
   }, [groups])
 
   const onGroupOpenAll = (g: Group, mode: 'append' | 'only' = 'append') => {
-    actions.openGroupScope(g.id, mode)
-    setActiveGroupTab(g.id)
+    actions.openGroupWorkspace(g.id, mode)
     setActiveView('workspace')
   }
 
@@ -468,7 +565,11 @@ export function ProjectSidebar() {
         <button
           type="button"
           className={`${styles.homeBtn} ${activeView === 'home' ? styles.homeBtnActive : ''}`}
-          onClick={() => setActiveView('home')}
+          onClick={() => {
+            if (activeView !== 'home') {
+              setActiveView('home')
+            }
+          }}
           title={t('ui.sidebar.homeTitle', { shortcut: 'Ctrl+Shift+H' })}
           aria-label={t('ui.sidebar.home')}
         >
@@ -476,9 +577,51 @@ export function ProjectSidebar() {
           <span>{t('ui.sidebar.home')}</span>
         </button>
       </div>
-      <header className={styles.header}>
+
+      <div className={styles.sidebarTabs} role="tablist" aria-label={t('ui.sidebar.navigation')}>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={sidebarTab === 'projects'}
+          aria-label={t('ui.sidebar.projects')}
+          title={t('ui.sidebar.projects')}
+          className={`${styles.sidebarTab} ${sidebarTab === 'projects' ? styles.sidebarTabActive : ''}`}
+          onClick={() => {
+            setSidebarTab('projects')
+            if (!keepHome) setActiveView('workspace')
+          }}
+        >
+          <Grid3x3 size={14} />
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={sidebarTab === 'files'}
+          aria-label={t('ui.sidebar.files')}
+          title={t('ui.sidebar.files')}
+          className={`${styles.sidebarTab} ${sidebarTab === 'files' ? styles.sidebarTabActive : ''}`}
+          onClick={() => {
+            setSidebarTab('files')
+            if (!keepHome) setActiveView('workspace')
+          }}
+        >
+          <Folder size={14} />
+        </button>
+      </div>
+
+      {sidebarTab === 'projects' ? <header className={styles.header}>
         <span className={styles.title}>{t('ui.sidebar.projects')}</span>
         <div className={styles.headerActions}>
+          <button
+            type="button"
+            className={styles.iconBtn}
+            onClick={() => void onAddMarkdownViewer()}
+            disabled={!activeProjectId}
+            title={t('ui.markdown.addViewerTitle')}
+            aria-label={t('ui.markdown.addViewer')}
+          >
+            <FileText size={14} />
+          </button>
           <button
             type="button"
             className={styles.iconBtn}
@@ -498,32 +641,63 @@ export function ProjectSidebar() {
             <Plus size={14} />
           </button>
         </div>
-      </header>
+      </header> : null}
 
-      <DndContext sensors={sensors} onDragEnd={onDragEnd}>
-        <div className={styles.list}>
-          {projects.length === 0 && groups.length === 0 ? (
-            <div className={styles.empty}>
-              {t('ui.sidebar.noProjects')}
-              <button
-                type="button"
-                onClick={() => openModal('newProject')}
-                className={styles.emptyBtn}
-              >
-                {t('ui.sidebar.createFirst')}
-              </button>
-            </div>
-          ) : (
-            <>
-              {(groupsByParent.get(null) ?? []).map(renderGroup)}
-
-              {ungroupedProjects.length > 0 ? (
-                <UngroupedSection projects={ungroupedProjects} renderProject={renderProject} />
-              ) : null}
-            </>
-          )}
+      {sidebarTab === 'files' ? <section className={styles.explorerPanel}>
+        <div className={styles.explorerHeader}>
+          <span className={styles.explorerLabel}>{t('ui.sidebar.explorer')}</span>
+          <MoreHorizontal size={14} />
         </div>
-      </DndContext>
+        {selectedTerminal && selectedSubTab ? (
+          <FileExplorer
+            cwd={selectedSubTab.cwd || selectedTerminal.cwd}
+            ptyId={selectedSubTab.ptyId}
+            terminalName={selectedTerminal.name}
+          />
+        ) : (
+          <div className={styles.explorerEmpty}>
+            <EmptyState
+              compact
+              icon={<FolderPlus size={18} />}
+              title={t('ui.sidebar.emptyTitle')}
+              description={t('ui.sidebar.emptyDesc')}
+              primaryAction={{
+                label: t('ui.sidebar.emptyAction'),
+                onClick: () => openModal('newProject'),
+              }}
+            />
+          </div>
+        )}
+      </section> : null}
+
+      {sidebarTab === 'projects' ? (
+        <DndContext sensors={sensors} onDragEnd={onDragEnd}>
+          <div className={styles.list}>
+            {projects.length === 0 && groups.length === 0 ? (
+              <div className={styles.emptyWrap}>
+                <EmptyState
+                  compact
+                  icon={<FolderPlus size={18} />}
+                  title={t('ui.sidebar.emptyTitle')}
+                  description={t('ui.sidebar.emptyDesc')}
+                  primaryAction={{
+                    label: t('ui.sidebar.emptyAction'),
+                    onClick: () => openModal('newProject'),
+                  }}
+                />
+              </div>
+            ) : (
+              <>
+                {(groupsByParent.get(null) ?? []).map(renderGroup)}
+
+                {ungroupedProjects.length > 0 ? (
+                  <UngroupedSection projects={ungroupedProjects} renderProject={renderProject} />
+                ) : null}
+              </>
+            )}
+          </div>
+        </DndContext>
+      ) : null}
 
       {menu ? (
         <ContextMenu x={menu.x} y={menu.y} items={menu.items} onClose={() => setMenu(null)} />
@@ -537,12 +711,12 @@ export function ProjectSidebar() {
   )
 }
 
-function WorkspaceLayoutFooter() {
+function WorkspaceLayoutFooter({ forceVisible = false }: { forceVisible?: boolean }) {
   const t = useT()
   const containerCount = useProjectsStore((s) => s.workspace.containers.length)
   const hasCustom = useProjectsStore((s) => Boolean(s.preferences.workspaceGridLayout))
   const openModal = useUiStore((s) => s.openModal_)
-  if (containerCount < 2) return null
+  if (!forceVisible && containerCount < 2) return null
   return (
     <div className={styles.layoutFooter}>
       <span className={styles.layoutLabel}>Workspace</span>
@@ -795,6 +969,7 @@ type ProjectNodeProps = {
   onActivate: () => void
   onToggleCollapsed: () => void
   onTerminalClick: (t: Terminal) => void
+  onTerminalDoubleClick: (t: Terminal) => void
   onProjectMenu: (e: React.MouseEvent) => void
   onTerminalMenu: (t: Terminal, e: React.MouseEvent) => void
   onAddTerminal: () => void
@@ -807,6 +982,7 @@ function ProjectNode({
   onActivate,
   onToggleCollapsed,
   onTerminalClick,
+  onTerminalDoubleClick,
   onProjectMenu,
   onTerminalMenu,
   onAddTerminal,
@@ -876,6 +1052,7 @@ function ProjectNode({
               terminal={term}
               selected={openPanes?.has(term.id) ?? false}
               onClick={() => onTerminalClick(term)}
+              onDoubleClick={() => onTerminalDoubleClick(term)}
               onMenu={(e) => onTerminalMenu(term, e)}
             />
           ))}
@@ -892,10 +1069,11 @@ type TerminalNodeProps = {
   terminal: Terminal
   selected: boolean
   onClick: () => void
+  onDoubleClick: () => void
   onMenu: (e: React.MouseEvent) => void
 }
 
-function TerminalNode({ project, terminal, selected, onClick, onMenu }: TerminalNodeProps) {
+function TerminalNode({ project, terminal, selected, onClick, onDoubleClick, onMenu }: TerminalNodeProps) {
   const t = useT()
   const terminalTheme = useProjectsStore(
     (s) => s.preferences.terminalTheme ?? s.preferences.uiTheme,
@@ -921,23 +1099,33 @@ function TerminalNode({ project, terminal, selected, onClick, onMenu }: Terminal
         terminal.disabled ? styles.terminalDisabled : ''
       } ${isDragging ? styles.dragging : ''}`}
       onClick={() => onClick()}
+      onDoubleClick={(event) => {
+        event.stopPropagation()
+        onDoubleClick()
+      }}
       onContextMenu={(e) => {
         e.preventDefault()
         e.stopPropagation()
         onMenu(e)
       }}
-      title={terminal.cwd || terminal.name}
+      title={terminal.filePath || terminal.cwd || terminal.name}
     >
       <span className={styles.agentStack}>
-        {orderedTypes.map((type, i) => (
-          <span
-            key={type}
-            className={styles.agentIcon}
-            style={{ marginLeft: i === 0 ? 0 : 2, zIndex: orderedTypes.length - i }}
-          >
-            <AgentIcon type={type} size={14} theme={terminalTheme} />
+        {terminal.kind === 'markdown' ? (
+          <span className={styles.agentIcon}>
+            <FileText size={14} />
           </span>
-        ))}
+        ) : (
+          orderedTypes.map((type, i) => (
+            <span
+              key={type}
+              className={styles.agentIcon}
+              style={{ marginLeft: i === 0 ? 0 : 2, zIndex: orderedTypes.length - i }}
+            >
+              <AgentIcon type={type} size={14} theme={terminalTheme} />
+            </span>
+          ))
+        )}
       </span>
       <span className={styles.terminalName}>{terminal.name}</span>
       {hasUnreadCompletion ? (

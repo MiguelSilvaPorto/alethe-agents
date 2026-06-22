@@ -29,6 +29,12 @@ const AUTHORIZE_URL: &str = "https://accounts.spotify.com/authorize";
 const TOKEN_URL: &str = "https://accounts.spotify.com/api/token";
 const NOW_PLAYING_URL: &str = "https://api.spotify.com/v1/me/player/currently-playing";
 
+/// Cliente HTTP compartilhado — reusa o pool de conexões entre chamadas.
+fn http_client() -> &'static reqwest::Client {
+    static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+    CLIENT.get_or_init(reqwest::Client::new)
+}
+
 // Flag pra impedir dois logins simultâneos (a porta 8888 é exclusiva).
 // AtomicBool pq MutexGuard de std não é Send across awaits.
 static LOGIN_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
@@ -134,7 +140,7 @@ async fn exchange_code(code: &str, credentials: &SpotifyCredentials) -> Result<T
         "{}:{}",
         credentials.client_id, credentials.client_secret
     ));
-    let resp = reqwest::Client::new()
+    let resp = http_client()
         .post(TOKEN_URL)
         .header("Authorization", format!("Basic {}", basic))
         .header("Content-Type", "application/x-www-form-urlencoded")
@@ -164,7 +170,7 @@ async fn refresh_token(
         "{}:{}",
         credentials.client_id, credentials.client_secret
     ));
-    let resp = reqwest::Client::new()
+    let resp = http_client()
         .post(TOKEN_URL)
         .header("Authorization", format!("Basic {}", basic))
         .header("Content-Type", "application/x-www-form-urlencoded")
@@ -366,7 +372,7 @@ pub async fn spotify_get_current(
         Err(e) if e == "not connected" => return Ok(None),
         Err(e) => return Err(e),
     };
-    let resp = reqwest::Client::new()
+    let resp = http_client()
         .get(NOW_PLAYING_URL)
         .header("Authorization", format!("Bearer {}", access))
         .send()

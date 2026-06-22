@@ -224,12 +224,156 @@
   color: var(--fg-muted);
   background: var(--bg-elevated);
   border: 1px solid var(--border);
+  cursor: pointer;
 }
 
 .usagePillCrit {
   color: var(--status-waiting);
   background: var(--status-waiting-soft);
   border-color: var(--status-waiting);
+}
+
+/* ── dropdown de uso (claude / codex) ── */
+.usageAnchor {
+  position: relative;
+  display: inline-flex;
+}
+
+.usageDropdown {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 20;
+  width: 250px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  background: var(--bg-elevated);
+  box-shadow: var(--shadow-lg);
+  cursor: default;
+}
+
+.usageTabs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.usageTab,
+.usageTabActive {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-sunken);
+  color: var(--fg-muted);
+  font: 11px var(--font-sans);
+  cursor: pointer;
+}
+
+.usageTabActive {
+  color: var(--fg);
+  border-color: var(--border-strong);
+  background: var(--panel);
+}
+
+.usageClose {
+  margin-left: auto;
+  display: inline-flex;
+  padding: 4px;
+  border: none;
+  background: transparent;
+  color: var(--fg-faint);
+  cursor: pointer;
+}
+
+.usageBody {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+
+.usageRow {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.usageRowHead {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font: 11px var(--font-mono);
+  color: var(--fg-muted);
+}
+
+.usageRowLabel {
+  font-weight: 600;
+  color: var(--fg);
+}
+
+.usageRowReset {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: var(--fg-faint);
+}
+
+.usageRowPct {
+  margin-left: auto;
+  color: var(--fg);
+}
+
+.usageBar {
+  height: 5px;
+  border-radius: 999px;
+  background: var(--bg-sunken);
+  overflow: hidden;
+}
+
+.usageBarFill {
+  height: 100%;
+  border-radius: 999px;
+}
+
+.usageStats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  font: 10px var(--font-mono);
+  color: var(--fg-faint);
+}
+
+.usageStatCrit {
+  color: var(--status-offline);
+}
+
+.usageAction {
+  margin-top: 2px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-sunken);
+  color: var(--fg-muted);
+  font: 11px var(--font-sans);
+  cursor: pointer;
+}
+
+.usageAction:hover {
+  border-color: var(--border-strong);
+  color: var(--fg);
+}
+
+.usageEmpty {
+  padding: 12px 8px;
+  text-align: center;
+  font: 11px var(--font-sans);
+  color: var(--fg-faint);
 }
 
 .fallbackBanner {
@@ -328,6 +472,20 @@
   align-items: center;
   justify-content: space-between;
   gap: 8px;
+}
+
+/* Resumo (cauda do scrollback) do que o worker terminou fazendo. */
+.codexResult {
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  padding: 6px 8px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-sunken);
+  font: 10px var(--font-mono);
+  color: var(--fg-faint);
+  white-space: pre-wrap;
 }
 
 .codexExpandHint {
@@ -484,6 +642,75 @@
   color: var(--text-quaternary);
 }
 
+/* Camada de tasks (DAG) dentro do canvas — conectada por edges ao teammate dono. */
+.tasksLayer {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  margin-top: 28px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+}
+
+.tasksLayerTitle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font: 600 11px var(--font-mono);
+  color: var(--fg-muted);
+}
+
+.tasksLayerGrid {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 14px;
+  width: 100%;
+}
+
+.taskNode {
+  width: 200px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border-radius: var(--radius-md);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+}
+
+.taskNodeDone {
+  opacity: 0.6;
+}
+
+.taskNodeHead {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.taskNodeHead .taskDot,
+.taskNodeHead .taskDotActive,
+.taskNodeHead .taskDotDone {
+  margin-top: 0;
+}
+
+.taskNodeSubject {
+  font: 600 12px var(--font-sans);
+  color: var(--fg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.taskNodeMeta {
+  font: 10px var(--font-mono);
+  color: var(--fg-faint);
+}
+
 .canvas {
   position: relative;
   display: flex;
@@ -492,10 +719,16 @@
   flex: 1;
   min-width: 0;
   min-height: 0;
-  overflow: hidden auto;
+  /* Pan/zoom por transform → sem scroll; o overflow é recortado (canvas). */
+  overflow: hidden;
+  cursor: grab;
   background: var(--bg);
   background-image: radial-gradient(circle, var(--border) 1px, transparent 1px);
   background-size: 24px 24px;
+}
+
+.canvasPanning {
+  cursor: grabbing;
 }
 
 .topBar {
@@ -553,6 +786,18 @@
   color: var(--fg-faint);
 }
 
+/* Stage = a árvore inteira (lead + ramos + tasks + arestas). Recebe o zoom e é
+   o sistema de coordenadas das arestas, então o svg escala junto e as linhas
+   ficam coladas nos nós em qualquer zoom. */
+.stage {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: 100%;
+  transform-origin: top center;
+}
+
 .edges {
   position: absolute;
   inset: 0;
@@ -560,6 +805,23 @@
   height: 100%;
   pointer-events: none;
   z-index: 0;
+}
+
+/* Controles de zoom no top bar. */
+.zoomControls {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding-right: 8px;
+  margin-right: 2px;
+  border-right: 1px solid var(--border);
+}
+
+.zoomLabel {
+  min-width: 38px;
+  text-align: center;
+  font: 11px var(--font-mono);
+  color: var(--fg-faint);
 }
 
 .edgeRunning,
@@ -636,6 +898,49 @@
   max-width: 1100px;
   margin-top: 96px;
   padding: 0 24px 40px;
+}
+
+/* Ramo da árvore: uma área por tipo de subagent (cards empilham pra baixo). */
+.agentGroup {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: color-mix(in srgb, var(--agent-color, var(--fg-faint)) 5%, transparent);
+}
+
+.agentGroupHeader {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 4px;
+  color: var(--agent-color, var(--fg-muted));
+  font: 600 12px var(--font-sans);
+}
+
+.agentGroupName {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agentGroupCount {
+  margin-left: auto;
+  flex-shrink: 0;
+  font: 600 10px var(--font-mono);
+  color: var(--fg-faint);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 1px 7px;
+}
+
+.agentGroupCards {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
 }
 
 .empty {
@@ -842,6 +1147,107 @@
   color: var(--text-quaternary);
 }
 
+/* Rodapé de custo do card (model · tokens · $). */
+.cardCost {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.cardCostModel {
+  font: 600 10px var(--font-mono);
+  color: var(--agent-color, var(--fg-muted));
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--agent-color, var(--fg-muted)) 14%, transparent);
+}
+
+.cardCostTokens {
+  font: 10px var(--font-mono);
+  color: var(--fg-faint);
+}
+
+.cardCostUsd {
+  margin-left: auto;
+  font: 700 11px var(--font-mono);
+}
+
+/* Pill de custo total da sessão no top bar (lead + nós). */
+.costPill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font: 11px var(--font-mono);
+  padding: 2px 8px;
+  border-radius: 999px;
+  color: var(--fg-muted);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+}
+
+/* Faixa de gasto → cor (mesma semântica do TokenHud). */
+.costLow {
+  color: var(--accent);
+}
+
+.costMid {
+  color: var(--status-waiting);
+}
+
+.costHigh {
+  color: var(--status-stopped);
+}
+
+/* Pill de economia por roteamento (verde — bom). */
+.savingsPill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font: 11px var(--font-mono);
+  padding: 2px 8px;
+  border-radius: 999px;
+  color: var(--status-working);
+  background: color-mix(in srgb, var(--status-working) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--status-working) 40%, transparent);
+}
+
+/* Controle de teto de orçamento (input numérico inline). */
+.budgetControl {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font: 11px var(--font-mono);
+  padding: 2px 8px;
+  border-radius: 999px;
+  color: var(--fg-muted);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+}
+
+.budgetInput {
+  width: 56px;
+  border: none;
+  background: transparent;
+  color: var(--fg);
+  font: 11px var(--font-mono);
+  outline: none;
+}
+
+.budgetInput::placeholder {
+  color: var(--fg-faint);
+}
+
+/* Banner crítico de orçamento (estourou o teto) — vermelho. */
+.budgetBannerCrit {
+  border-color: var(--status-offline);
+  background: color-mix(in srgb, var(--status-offline) 12%, transparent);
+}
+
+.budgetBannerCrit .fallbackDot {
+  background: var(--status-offline);
+}
+
 /* ── modal ── */
 
 .modalBackdrop {
@@ -906,6 +1312,25 @@
   white-space: pre-wrap;
   max-height: 120px;
   overflow-y: auto;
+}
+
+.modalCostList {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-sunken);
+}
+
+.modalCostRow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.modalCostRow .feedSummary {
+  margin-right: auto;
 }
 
 .modalFeed {

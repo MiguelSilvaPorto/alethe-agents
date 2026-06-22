@@ -13,7 +13,7 @@ pub struct CodexSessionSnapshot {
     pub size_bytes: u64,
 }
 
-fn codex_sessions_dir() -> Option<PathBuf> {
+pub(crate) fn codex_sessions_dir() -> Option<PathBuf> {
     let home = env::var_os("USERPROFILE")
         .or_else(|| env::var_os("HOME"))
         .map(PathBuf::from)?;
@@ -38,7 +38,7 @@ fn normalize_cwd(cwd: &str) -> String {
     }
 }
 
-fn collect_jsonl_files(dir: &Path, out: &mut Vec<PathBuf>) {
+pub(crate) fn collect_jsonl_files(dir: &Path, out: &mut Vec<PathBuf>) {
     let Ok(entries) = fs::read_dir(dir) else {
         return;
     };
@@ -75,6 +75,24 @@ fn parse_codex_session(path: &Path, metadata: &fs::Metadata) -> Option<CodexSess
         modified_at_ms: modified_ms(metadata),
         size_bytes: metadata.len(),
     })
+}
+
+/// Lê só o session_meta.id da primeira linha do rollout (sem custo de parsear o
+/// arquivo inteiro). Usado pra mapear session_id -> path no agent_cost.
+pub(crate) fn session_meta_id(path: &Path) -> Option<String> {
+    let file = fs::File::open(path).ok()?;
+    let mut reader = BufReader::new(file);
+    let mut first_line = String::new();
+    reader.read_line(&mut first_line).ok()?;
+    let value = serde_json::from_str::<serde_json::Value>(&first_line).ok()?;
+    if value.get("type").and_then(|v| v.as_str()) != Some("session_meta") {
+        return None;
+    }
+    value
+        .get("payload")?
+        .get("id")?
+        .as_str()
+        .map(|s| s.to_string())
 }
 
 #[tauri::command]

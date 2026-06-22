@@ -1,194 +1,379 @@
-import { RefreshCw } from 'lucide-react'
-import { useState } from 'react'
+import { Clock, RefreshCw } from 'lucide-react'
+import { useState, type ReactNode } from 'react'
 import { getCachedClaudeUsage } from '../../lib/claudeUsageCache'
+import { getCachedCodexUsage } from '../../lib/codexUsageCache'
 import { translate, getLocale, useT } from '../../lib/i18n'
-import type { ClaudeUsage } from '../../lib/tauri'
+import type { ClaudeUsage, CodexUsage } from '../../lib/tauri'
 import { useUiStore } from '../../stores/uiStore'
 import { ClaudeIcon, CodexIcon } from '../icons/AgentIcons'
 import { ActivityGraph } from './ActivityGraph'
 import styles from './HomeView.module.css'
 
+function formatDiff(diff: number): string {
+  if (Number.isNaN(diff)) return '—'
+  if (diff <= 0) return translate(getLocale(), 'widget.resetting')
+  const h = Math.floor(diff / 3_600_000)
+  const m = Math.floor((diff % 3_600_000) / 60_000)
+  if (h >= 24) {
+    const d = Math.floor(h / 24)
+    return `${d}d ${h % 24}h`
+  }
+  return h > 0 ? `${h}h ${m}m` : `${m}m`
+}
+
 function formatResetTime(resetsAt: string): string {
   if (!resetsAt) return '—'
   try {
-    const diff = new Date(resetsAt).getTime() - Date.now()
-    if (Number.isNaN(diff)) return '—'
-    if (diff <= 0) return translate(getLocale(), 'widget.resetting')
-    const h = Math.floor(diff / 3_600_000)
-    const m = Math.floor((diff % 3_600_000) / 60_000)
-    return h > 0 ? `${h}h ${m}m` : `${m}m`
+    return formatDiff(new Date(resetsAt).getTime() - Date.now())
   } catch {
     return resetsAt
   }
 }
 
-function meterFillClass(util: number): string {
-  if (util >= 80) return styles.meterFillCrit
-  if (util >= 50) return styles.meterFillWarn
-  return styles.meterFillOk
+function formatResetMs(resetsAtMs: number): string {
+  if (!resetsAtMs) return '—'
+  return formatDiff(resetsAtMs - Date.now())
 }
 
-function pct(v: number): string {
-  return `${v.toFixed(0)}%`
+/** Cor do medidor: base (cor do agente) até 50%, âmbar até 80%, vermelho acima. */
+function meterColor(util: number, base: string): string {
+  if (util >= 80) return 'var(--status-offline)'
+  if (util >= 50) return 'var(--status-waiting)'
+  return base
 }
 
-function ClaudeCard({ usage }: { usage: ClaudeUsage | null }) {
+function pctNum(v: number): number {
+  return Math.round(v)
+}
+
+function CardHead({
+  badgeClass,
+  icon,
+  name,
+  plan,
+  accent,
+  hasData,
+  onRefresh,
+}: {
+  badgeClass: string
+  icon: ReactNode
+  name: string
+  plan?: string
+  accent: string
+  hasData: boolean
+  onRefresh: () => Promise<void>
+}) {
   const t = useT()
-  const setClaudeUsage = useUiStore((s) => s.setClaudeUsage)
   const [refreshing, setRefreshing] = useState(false)
-
-  const handleRefresh = async () => {
+  const handle = async () => {
     setRefreshing(true)
     try {
-      const data = await getCachedClaudeUsage(true)
-      setClaudeUsage(data)
-    } catch {
-      setClaudeUsage(null)
+      await onRefresh()
     } finally {
       setRefreshing(false)
     }
   }
-
-  const header = (
-    <div className={styles.usageHead}>
-      <div className={`${styles.usageIcon} ${styles.usageIconClaude}`}>
-        <ClaudeIcon size={22} />
-      </div>
-      <span className={styles.usageName}>claude code</span>
-      <span className={styles.usageTier}>{usage ? 'max · 5x' : '—'}</span>
-      <button
-        type="button"
-        className={styles.usageRefreshBtn}
-        onClick={handleRefresh}
-        disabled={refreshing}
-        title={usage ? t('widget.refreshUsage') : t('widget.tryAgain')}
-      >
-        <RefreshCw size={12} className={refreshing ? styles.usageRefreshSpin : undefined} />
-      </button>
-    </div>
-  )
-
-  if (!usage) {
-    return (
-      <div className={styles.usageCard}>
-        {header}
-        <div className={styles.usageMain}>
-          <div className={styles.usageMainValue}>—</div>
-          <div className={styles.usageMainLabel}>{t('widget.noTokenConfigured')}</div>
-        </div>
-        <div className={styles.usageBody}>
-          <div className={styles.usageEmpty}>{t('widget.connectToSeeUsage')}</div>
-        </div>
-      </div>
-    )
-  }
-
   return (
-    <div className={styles.usageCard}>
-      {header}
-
-      <div className={styles.usageMain}>
-        <div className={styles.usageMainValue}>{pct(usage.five_hour.utilization)}</div>
-        <div className={styles.usageMainLabel}>
-          <span>{t('widget.usage5h')}</span>
-          <span>·</span>
-          <span>{t('widget.resetIn', { time: formatResetTime(usage.five_hour.resets_at) })}</span>
-        </div>
-      </div>
-
-      <div className={styles.usageBody}>
-        <Meter
-          label="5h"
-          resetLabel={t('widget.resetsIn', { time: formatResetTime(usage.five_hour.resets_at) })}
-          value={pct(usage.five_hour.utilization)}
-          util={usage.five_hour.utilization}
-        />
-        <Meter
-          label={t('widget.week')}
-          resetLabel={t('widget.resetsIn', { time: formatResetTime(usage.seven_day.resets_at) })}
-          value={pct(usage.seven_day.utilization)}
-          util={usage.seven_day.utilization}
-        />
-        <Meter
-          label="opus"
-          resetLabel={t('widget.resetsIn', { time: formatResetTime(usage.seven_day_opus.resets_at) })}
-          value={pct(usage.seven_day_opus.utilization)}
-          util={usage.seven_day_opus.utilization}
-        />
+    <div className={styles.cardHead}>
+      <div className={`${styles.badge} ${badgeClass}`}>{icon}</div>
+      <span className={styles.name}>{name}</span>
+      {plan && <span className={styles.plan}>{plan}</span>}
+      <div className={styles.headRight}>
+        {hasData && (
+          <span className={styles.live}>
+            <span className={styles.liveDot} style={{ background: accent }} />
+            {t('widget.live')}
+          </span>
+        )}
+        <button
+          type="button"
+          className={styles.iconBtn}
+          onClick={handle}
+          disabled={refreshing}
+          title={hasData ? t('widget.refreshUsage') : t('widget.tryAgain')}
+        >
+          <RefreshCw size={12} className={refreshing ? styles.iconBtnSpin : undefined} />
+        </button>
       </div>
     </div>
   )
 }
 
-function CodexCard() {
-  const t = useT()
+function Hero({
+  percent,
+  reset,
+  sub,
+  critical,
+}: {
+  percent: number
+  reset: string
+  sub: ReactNode
+  critical?: boolean
+}) {
   return (
-    <div className={styles.usageCard}>
-      <div className={styles.usageHead}>
-        <div className={`${styles.usageIcon} ${styles.usageIconCodex}`}>
-          <CodexIcon size={22} />
+    <>
+      <div className={styles.hero}>
+        <div className={styles.heroNumWrap}>
+          <span className={styles.heroNum}>{pctNum(percent)}</span>
+          <span className={styles.heroDen}>%</span>
         </div>
-        <span className={styles.usageName}>codex</span>
-        <span className={styles.usageTier}>plus</span>
+        <span className={styles.timechip}>
+          <Clock size={11} />
+          <b>{reset}</b>
+        </span>
       </div>
-
-      <div className={styles.usageMain}>
-        <div className={styles.usageMainValue}>2.4M / 5M</div>
-        <div className={styles.usageMainLabel}>
-          <span>{t('widget.tokensToday')}</span>
-          <span>·</span>
-          <span>48%</span>
-        </div>
-      </div>
-
-      <div className={styles.usageBody}>
-        <Meter label={t('widget.today')} resetLabel={t('widget.reset0000')} value="2.4M / 5M" util={48} fillClass={styles.meterFillCodex} />
-        <Meter label={t('widget.week')} resetLabel={t('widget.sevenDays')} value="11.2M / 30M" util={37} fillClass={styles.meterFillCodex} />
-        <Meter label="requests" resetLabel={t('widget.perMinute')} value="3 / 60" util={5} fillClass={styles.meterFillCodex} />
-      </div>
-    </div>
+      <div className={`${styles.heroSub} ${critical ? styles.heroSubCrit : ''}`}>{sub}</div>
+    </>
   )
 }
 
 function Meter({
   label,
-  resetLabel,
+  reset,
   value,
   util,
-  fillClass,
+  base,
 }: {
   label: string
-  resetLabel: string
+  reset?: string
   value: string
   util: number
-  fillClass?: string
+  base: string
 }) {
+  const color = meterColor(util, base)
+  const pulse = util >= 80
   return (
     <div className={styles.meter}>
       <div className={styles.meterRow}>
         <span className={styles.meterLabel}>
           {label}
-          <span className={styles.meterReset}>{resetLabel}</span>
+          {reset && <span className={styles.meterReset}>{reset}</span>}
         </span>
         <span className={styles.meterValue}>{value}</span>
       </div>
       <div className={styles.meterBar}>
         <div
-          className={`${styles.meterFill} ${fillClass ?? meterFillClass(util)}`}
-          style={{ width: `${Math.min(util, 100)}%` }}
+          className={`${styles.meterFill} ${pulse ? styles.meterFillPulse : ''}`}
+          style={{ width: `${Math.min(util, 100)}%`, background: color }}
         />
       </div>
+    </div>
+  )
+}
+
+function CardFoot({ accent, left, right }: { accent: string; left: ReactNode; right: ReactNode }) {
+  return (
+    <div className={styles.cardFoot}>
+      <span className={styles.cardFootLeft}>
+        <span className={styles.cardFootDot} style={{ background: accent }} />
+        {left}
+      </span>
+      <span className={styles.cardFootRight}>{right}</span>
+    </div>
+  )
+}
+
+function StatCell({ label, value, crit }: { label: string; value: string; crit?: boolean }) {
+  return (
+    <div className={styles.statCell}>
+      <span className={styles.statLabel}>{label}</span>
+      <span className={`${styles.statValue} ${crit ? styles.statValueCrit : ''}`}>{value}</span>
+    </div>
+  )
+}
+
+function ClaudeCard({ usage }: { usage: ClaudeUsage | null }) {
+  const t = useT()
+  const setClaudeUsage = useUiStore((s) => s.setClaudeUsage)
+  const accent = 'var(--agent-claude)'
+
+  const refresh = async () => {
+    try {
+      setClaudeUsage(await getCachedClaudeUsage(true))
+    } catch {
+      setClaudeUsage(null)
+    }
+  }
+
+  const head = (
+    <CardHead
+      badgeClass={styles.badgeClaude}
+      icon={<ClaudeIcon size={16} />}
+      name="claude code"
+      plan={usage ? 'max · 5x' : undefined}
+      accent={accent}
+      hasData={!!usage}
+      onRefresh={refresh}
+    />
+  )
+
+  if (!usage) {
+    return (
+      <div className={styles.usageCard}>
+        {head}
+        <div className={styles.usageEmpty}>
+          <span className={styles.usageEmptyTitle}>{t('widget.noTokenConfigured')}</span>
+          <span className={styles.usageEmptyHint}>{t('widget.connectToSeeUsage')}</span>
+        </div>
+      </div>
+    )
+  }
+
+  const maxUtil = Math.max(
+    usage.five_hour.utilization,
+    usage.seven_day.utilization,
+    usage.seven_day_opus.utilization,
+  )
+
+  return (
+    <div className={styles.usageCard}>
+      {head}
+      <Hero
+        percent={usage.five_hour.utilization}
+        reset={formatResetTime(usage.five_hour.resets_at)}
+        critical={usage.five_hour.utilization >= 80}
+        sub={
+          <>
+            {t('widget.usage5h')} · <b>{t('widget.week')} {pctNum(usage.seven_day.utilization)}%</b>
+          </>
+        }
+      />
+      <div className={styles.cardBody}>
+        <div className={styles.meterList}>
+          <Meter
+            label="5h"
+            value={`${pctNum(usage.five_hour.utilization)}%`}
+            util={usage.five_hour.utilization}
+            base={accent}
+          />
+          <Meter
+            label={t('widget.week')}
+            value={`${pctNum(usage.seven_day.utilization)}%`}
+            util={usage.seven_day.utilization}
+            base={accent}
+          />
+          <Meter
+            label="opus"
+            value={`${pctNum(usage.seven_day_opus.utilization)}%`}
+            util={usage.seven_day_opus.utilization}
+            base={accent}
+          />
+        </div>
+        <div className={styles.statGrid}>
+          <StatCell label={t('widget.resetLabel', { w: '5h' })} value={formatResetTime(usage.five_hour.resets_at)} />
+          <StatCell label={t('widget.resetLabel', { w: t('widget.week') })} value={formatResetTime(usage.seven_day.resets_at)} />
+          <StatCell label={t('widget.resetLabel', { w: 'opus' })} value={formatResetTime(usage.seven_day_opus.resets_at)} />
+          <StatCell label={t('widget.peakLabel')} value={`${pctNum(maxUtil)}%`} crit={maxUtil >= 80} />
+        </div>
+      </div>
+      <CardFoot
+        accent={accent}
+        left={`5h · ${t('widget.week')} · opus`}
+        right={t('widget.peak', { v: `${pctNum(maxUtil)}%` })}
+      />
+    </div>
+  )
+}
+
+function CodexCard({ usage }: { usage: CodexUsage | null }) {
+  const t = useT()
+  const setCodexUsage = useUiStore((s) => s.setCodexUsage)
+  const accent = 'var(--agent-codex)'
+
+  const refresh = async () => {
+    try {
+      setCodexUsage(await getCachedCodexUsage(true))
+    } catch {
+      setCodexUsage(null)
+    }
+  }
+
+  const head = (
+    <CardHead
+      badgeClass={styles.badgeCodex}
+      icon={<CodexIcon size={16} />}
+      name="codex"
+      plan={usage?.plan || undefined}
+      accent={accent}
+      hasData={!!usage}
+      onRefresh={refresh}
+    />
+  )
+
+  if (!usage) {
+    return (
+      <div className={styles.usageCard}>
+        {head}
+        <div className={styles.usageEmpty}>
+          <span className={styles.usageEmptyTitle}>{t('widget.codexNotSignedIn')}</span>
+          <span className={styles.usageEmptyHint}>{t('widget.codexSignInHint')}</span>
+        </div>
+      </div>
+    )
+  }
+
+  const maxUtil = Math.max(usage.primary.used_percent, usage.secondary.used_percent)
+
+  return (
+    <div className={styles.usageCard}>
+      {head}
+      <Hero
+        percent={usage.primary.used_percent}
+        reset={formatResetMs(usage.primary.resets_at_ms)}
+        critical={usage.rate_limited || usage.primary.used_percent >= 80}
+        sub={
+          usage.rate_limited ? (
+            t('widget.limitReached')
+          ) : (
+            <>
+              {t('widget.usage5h')} · <b>{t('widget.week')} {pctNum(usage.secondary.used_percent)}%</b>
+            </>
+          )
+        }
+      />
+      <div className={styles.cardBody}>
+        <div className={styles.meterList}>
+          <Meter
+            label="5h"
+            value={`${pctNum(usage.primary.used_percent)}%`}
+            util={usage.primary.used_percent}
+            base={accent}
+          />
+          <Meter
+            label={t('widget.week')}
+            value={`${pctNum(usage.secondary.used_percent)}%`}
+            util={usage.secondary.used_percent}
+            base={accent}
+          />
+        </div>
+        <div className={styles.statGrid}>
+          <StatCell label={t('widget.resetLabel', { w: '5h' })} value={formatResetMs(usage.primary.resets_at_ms)} />
+          <StatCell label={t('widget.resetLabel', { w: t('widget.week') })} value={formatResetMs(usage.secondary.resets_at_ms)} />
+          <StatCell
+            label={t('widget.statusLabel')}
+            value={usage.rate_limited ? t('widget.statusLimited') : t('widget.statusOk')}
+            crit={usage.rate_limited}
+          />
+          <StatCell label={t('widget.creditsLabel')} value={String(usage.reset_credits)} />
+        </div>
+      </div>
+      <CardFoot
+        accent={accent}
+        left={`5h · ${t('widget.week')}`}
+        right={t('widget.peak', { v: `${pctNum(maxUtil)}%` })}
+      />
     </div>
   )
 }
 
 export function UsageStrip() {
   const claudeUsage = useUiStore((s) => s.claudeUsage)
+  const codexUsage = useUiStore((s) => s.codexUsage)
 
   return (
     <div className={styles.usageStrip}>
       <ClaudeCard usage={claudeUsage} />
-      <CodexCard />
+      <CodexCard usage={codexUsage} />
       <ActivityGraph />
     </div>
   )

@@ -126,14 +126,48 @@ pub fn start_listener(app: AppHandle) {
                 continue;
             }
 
-            // Ponte de controle: o control plane (lead) despacha uma tarefa pro
-            // terminal codex via `curl -X POST /codex -d '<tarefa>'`. O Alethe
-            // emite `codex-task`; o front escreve no PTY do codex worker. Body
-            // é texto cru (a tarefa), não JSON.
+            // Ponte de dispatch genérica: o control plane (lead) spawna um
+            // processo real (claude/codex/opencode) via
+            // `curl -X POST /spawn -d '{"agent":"codex","task":"...","mode":"exec"}'`.
+            // O Alethe emite `agent-spawn`; o front sobe um PTY worker. Campos:
+            // agent (obrigatório), task, cwd?, mode? ("exec" default | "interactive").
+            if url.starts_with("/spawn") {
+                match serde_json::from_str::<serde_json::Value>(&body) {
+                    Ok(payload) => {
+                        let agent = payload
+                            .get("agent")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        if !matches!(agent.as_str(), "claude" | "codex" | "opencode") {
+                            let _ = request.respond(tiny_http::Response::from_string(
+                                "agent invalido (use claude|codex|opencode)",
+                            ).with_status_code(400));
+                            continue;
+                        }
+                        eprintln!("[agent_events] /spawn agent={agent}");
+                        let _ = app.emit("agent-spawn", &payload);
+                        let _ = request.respond(tiny_http::Response::from_string(format!(
+                            "spawn de {agent} enfileirado no Alethe"
+                        )));
+                    }
+                    Err(e) => {
+                        let _ = request.respond(tiny_http::Response::from_string(format!(
+                            "/spawn espera JSON: {e}"
+                        )).with_status_code(400));
+                    }
+                }
+                continue;
+            }
+
+            // Alias legado: o control plane antigo despacha texto cru pro codex
+            // via `curl -X POST /codex -d '<tarefa>'`. Encaminha pro mesmo fluxo
+            // emitindo agent-spawn com agent=codex.
             if url.starts_with("/codex") {
                 let task = body.trim().to_string();
-                eprintln!("[agent_events] /codex task ({} chars)", task.len());
-                let _ = app.emit("codex-task", &task);
+                eprintln!("[agent_events] /codex (legado) task ({} chars)", task.len());
+                let payload = serde_json::json!({ "agent": "codex", "task": task });
+                let _ = app.emit("agent-spawn", &payload);
                 let _ = request.respond(tiny_http::Response::from_string(
                     "queued no terminal codex do Alethe",
                 ));

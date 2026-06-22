@@ -16,6 +16,19 @@ export function normalizePastedText(text: string): string {
   return text.replace(/\r\n?/g, '\n').replace(/\n/g, '\r')
 }
 
+/**
+ * Formata caminhos arrastados do SO pro terminal: aspas só quando o path tem
+ * espaço, múltiplos separados por espaço, e um espaço no fim pra continuar
+ * digitando. Strings vazias são descartadas; sem paths válidos retorna ''.
+ */
+export function formatDroppedPaths(paths: string[]): string {
+  const formatted = paths
+    .filter(Boolean)
+    .map((p) => (/\s/.test(p) ? `"${p}"` : p))
+    .join(' ')
+  return formatted ? `${formatted} ` : ''
+}
+
 export function getWheelScrollLines(event: WheelLike, lineHeight: number): number {
   if (event.deltaY === 0) return 0
 

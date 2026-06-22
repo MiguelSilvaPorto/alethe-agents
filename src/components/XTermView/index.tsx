@@ -3,13 +3,18 @@ import { SearchAddon } from '@xterm/addon-search'
 import { WebglAddon } from '@xterm/addon-webgl'
 import { Terminal } from '@xterm/xterm'
 import type { ILink } from '@xterm/xterm'
-import { Copy, ExternalLink, FolderOpen, X } from 'lucide-react'
+import { getCurrentWebview } from '@tauri-apps/api/webview'
+import { Copy, ExternalLink, FolderOpen, LayoutGrid, X } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import '@xterm/xterm/css/xterm.css'
 
 import { pickFile } from '../../lib/dialog'
 import { AgentCompletionMonitor } from '../../lib/agentCompletionMonitor'
+import { recordAgentActivityInput } from '../../lib/activityTracker'
+import { buildAgentLaunch } from '../../lib/sessionLaunch'
+import { claimDiscoveredSession, registerSessionClaim } from '../../lib/sessionDiscovery'
 import { consumeSession, removeSession, saveSession } from '../../lib/sessionResume'
+import { waitForSessionHint } from '../../lib/sessionWatch'
 import { acquireSpawnSlot, releaseSpawnSlot } from '../../lib/spawnQueue'
 import { readScopedStorage, writeScopedStorage } from '../../lib/storageNamespace'
 import {
@@ -23,7 +28,6 @@ import {
   readClipboardText,
   resizePty,
   spawnPty,
-  snapshotClaudeSessions,
   snapshotCodexSessions,
   writeClipboardText,
   writePty,
@@ -34,6 +38,7 @@ import { useProjectsStore } from '../../stores/projectsStore'
 import { useTerminalsStore } from '../../stores/terminalsStore'
 import { useUiStore } from '../../stores/uiStore'
 import {
+  formatDroppedPaths,
   getTerminalScrollbackRows,
   getWheelScrollLines,
   normalizePastedText,
@@ -44,14 +49,19 @@ type DetectedLink = {
   text: string
   index: number
   kind: 'url' | 'path'
+  /** True quando o path aponta para um arquivo .md/.markdown. */
+  isMarkdown?: boolean
 }
 
 type LinkActionState = {
   text: string
   kind: 'url' | 'path'
+  isMarkdown?: boolean
   x: number
   y: number
 }
+
+const MARKDOWN_PATH_PATTERN = /\.(md|markdown)$/i
 
 const TERMINAL_LINK_PATTERN =
   /https?:\/\/[^\s<>"'`]+|(?:[A-Za-z]:\\|\\\\)[^\s<>"'`|]+|(?:~|\/)[^\s<>"'`|]+/g
@@ -224,10 +234,12 @@ function detectTerminalLinks(line: string): DetectedLink[] {
     const raw = match[0]
     const text = raw.replace(LINK_TRAILING_PUNCTUATION, '')
     if (!text) continue
+    const kind = text.startsWith('http://') || text.startsWith('https://') ? 'url' : 'path'
     links.push({
       text,
       index: match.index ?? 0,
-      kind: text.startsWith('http://') || text.startsWith('https://') ? 'url' : 'path',
+      kind,
+      isMarkdown: kind === 'path' && MARKDOWN_PATH_PATTERN.test(text),
     })
   }
   return links
@@ -257,14 +269,19 @@ function makeXtermLink(
 
 export type XTermViewProps = {
   ptyId: string
+  /** Projeto dono deste terminal — usado pra "abrir .md no grid" via hover. */
+  projectId?: string
   /** Tipo do agent (claude/codex/opencode) ou null pra shell. */
   command?: AgentType | null
   cwd?: string | null
   extraArgs?: string[]
+  /** Identidade persistida da conversa deste pane. */
+  sessionId?: string
   /** Env extra só deste PTY. */
   env?: Record<string, string>
   terminalTheme?: Theme
   onSpawned?: (id: string) => void
+  onSessionId?: (id: string) => void
   onExit?: (code: number | null) => void
   onAgentComplete?: () => void
 }
@@ -308,12 +325,15 @@ async function writePtyChunked(
 
 export function XTermView({
   ptyId,
+  projectId,
   command,
   cwd,
   extraArgs,
+  sessionId,
   env,
   terminalTheme = 'dark',
   onSpawned,
+  onSessionId,
   onExit,
   onAgentComplete,
 }: XTermViewProps) {
@@ -330,10 +350,12 @@ export function XTermView({
   const setCliPath = useProjectsStore((s) => s.setCliPath)
 
   const onSpawnedRef = useRef(onSpawned)
+  const onSessionIdRef = useRef(onSessionId)
   const onExitRef = useRef(onExit)
   const onAgentCompleteRef = useRef(onAgentComplete)
   useEffect(() => {
     onSpawnedRef.current = onSpawned
+    onSessionIdRef.current = onSessionId
     onExitRef.current = onExit
     onAgentCompleteRef.current = onAgentComplete
   })
@@ -346,6 +368,7 @@ export function XTermView({
   const [retryKey, setRetryKey] = useState(0)
   const [bootPhase, setBootPhase] = useState<'queued' | 'spawning' | 'attaching' | 'ready'>('queued')
   const [linkActions, setLinkActions] = useState<LinkActionState | null>(null)
+  const [dropActive, setDropActive] = useState(false)
 
   const clearLinkTooltipHideTimer = useCallback(() => {
     if (linkTooltipHideTimerRef.current === null) return
@@ -372,11 +395,20 @@ export function XTermView({
       setLinkActions({
         text: link.text,
         kind: link.kind,
+        isMarkdown: link.isMarkdown,
         x: Math.min(Math.max(event.clientX, 180), window.innerWidth - 180),
         y: Math.max(event.clientY, 72),
       })
     },
     [clearLinkTooltipHideTimer],
+  )
+
+  const openMarkdownInGrid = useCallback(
+    (target: string) => {
+      if (!projectId) return
+      useProjectsStore.getState().createMarkdownPane(projectId, { filePath: target })
+    },
+    [projectId],
   )
 
   const openLinkInBrowser = useCallback(async (target: string) => {
@@ -471,6 +503,7 @@ export function XTermView({
     let disposed = false
     let unlistenData: (() => void) | null = null
     let unlistenExit: (() => void) | null = null
+    let unlistenDragDrop: (() => void) | null = null
     let resizeTimer: number | null = null
     let writeFrame: number | null = null
     let pendingWrite = ''
@@ -520,8 +553,26 @@ export function XTermView({
     try {
       webglAddon = new WebglAddon()
       webglAddon.onContextLoss(() => {
+        // Perda de contexto GL (ex.: muitos terminais estouram o limite de
+        // contextos da WebView, ou soluço do processo de GPU). Descarta o addon
+        // (o xterm volta pro renderer DOM) e NÃO recria — evita thrash.
         webglAddon?.dispose()
         webglAddon = null
+        // Um syncScrollArea assíncrono já agendado pode ler `dimensions` de um
+        // renderer morto e lançar ("Cannot read properties of undefined
+        // (reading 'dimensions')"), o que cascateia e derruba a render. Força um
+        // re-fit/refresh no próximo frame pra reestabelecer as dimensões — só se
+        // o container tiver tamanho válido, e sempre dentro de try/catch.
+        window.requestAnimationFrame(() => {
+          try {
+            const rect = container.getBoundingClientRect()
+            if (rect.width < 50 || rect.height < 30) return
+            fitAddon.fit()
+            terminal.refresh(0, Math.max(0, terminal.rows - 1))
+          } catch {
+            /* container invisível / em teardown — ignora */
+          }
+        })
       })
       terminal.loadAddon(webglAddon)
     } catch {
@@ -568,6 +619,38 @@ export function XTermView({
       recordPromptInput(text)
       void writePtyChunked(id, text, terminal.modes.bracketedPasteMode)
     }
+
+    // Arrastar arquivo do SO pro terminal: o onDragDropEvent do Tauri é global,
+    // então todo pane recebe o evento — cada um filtra pelo hit-test da posição
+    // (física → CSS via devicePixelRatio) e só reage quando o cursor está sobre
+    // o seu próprio container. Reaproveita pasteText (bracketed-paste).
+    const isOverThisPane = (pos: { x: number; y: number }) => {
+      const dpr = window.devicePixelRatio || 1
+      const el = document.elementFromPoint(pos.x / dpr, pos.y / dpr)
+      return !!el && container.contains(el)
+    }
+    void getCurrentWebview()
+      .onDragDropEvent((event) => {
+        const p = event.payload
+        if (p.type === 'enter' || p.type === 'over') {
+          setDropActive(isOverThisPane(p.position))
+        } else if (p.type === 'leave') {
+          setDropActive(false)
+        } else if (p.type === 'drop') {
+          setDropActive(false)
+          if (isOverThisPane(p.position) && p.paths.length > 0) {
+            pasteText(formatDroppedPaths(p.paths))
+            terminal.focus()
+          }
+        }
+      })
+      .then((un) => {
+        if (disposed) un()
+        else unlistenDragDrop = un
+      })
+      .catch(() => {
+        /* onDragDropEvent exige runtime Tauri; em browser puro/testes falha. */
+      })
 
     terminal.attachCustomKeyEventHandler((event) => {
       if (event.type !== 'keydown') return true
@@ -697,6 +780,8 @@ export function XTermView({
       if (!id) return
       recordPromptInput(data)
       completionMonitor?.handleInput(data)
+      const trackedPtyId = ptyIdRef.current
+      if (trackedPtyId) recordAgentActivityInput(trackedPtyId, data)
       void writePty(id, data)
     })
 
@@ -725,36 +810,26 @@ export function XTermView({
           }
         }
 
-        // Session resume: se havia sessão ativa salva (app fechou abruptamente),
-        // injeta os argumentos de resume corretos para cada CLI.
-        let spawnArgs = extraArgs && extraArgs.length > 0 ? [...extraArgs] : undefined
+        // projects.json é a fonte principal. O marcador de crash no localStorage
+        // serve apenas de fallback para arquivos antigos que ainda não tinham ID.
         const savedSession = command && RESUMABLE_AGENTS.includes(command) ? consumeSession(ptyId) : null
-        if (savedSession) {
-          if (command === 'claude' && savedSession.claudeSessionId) {
-            // Resume a conversa específica pelo ID (evita conflito com 2+ claudes na mesma pasta)
-            spawnArgs = spawnArgs
-              ? ['--resume', savedSession.claudeSessionId, ...spawnArgs]
-              : ['--resume', savedSession.claudeSessionId]
-          } else if (command === 'codex' && savedSession.codexSessionId) {
-            spawnArgs = spawnArgs
-              ? ['resume', savedSession.codexSessionId, ...spawnArgs]
-              : ['resume', savedSession.codexSessionId]
-          } else if (command === 'codex') {
-            // Codex CLI usa `resume` como subcomando, não `--resume` como flag.
-            // Fallback para sessoes antigas que ainda nao tinham ID persistido.
-            spawnArgs = spawnArgs ? ['resume', '--last', ...spawnArgs] : ['resume', '--last']
-          } else {
-            const resumeFlag = command === 'claude' ? '--continue' : '--resume'
-            spawnArgs = spawnArgs ? [resumeFlag, ...spawnArgs] : [resumeFlag]
-          }
+        const savedConversationId = command === 'claude'
+          ? savedSession?.claudeSessionId
+          : command === 'codex'
+            ? savedSession?.codexSessionId
+            : undefined
+        const launch = command
+          ? buildAgentLaunch(command, extraArgs ?? [], sessionId ?? savedConversationId)
+          : { args: extraArgs ?? [], sessionId: undefined, createdSession: false }
+        const spawnArgs = launch.args.length > 0 ? launch.args : undefined
+        if (launch.sessionId && launch.sessionId !== sessionId) {
+          onSessionIdRef.current?.(launch.sessionId)
         }
+        if (command && cwd) registerSessionClaim(command, cwd, launch.sessionId)
 
-        // Snapshot leve das sessions existentes antes de spawnar pra detectar
-        // a nova depois. Sem await aqui o spawn não espera por I/O do Claude.
-        const claudeSessionsBeforePromise = (command === 'claude' && cwd)
-          ? snapshotClaudeSessions(cwd).catch(() => [])
-          : null
-        const codexSessionsBeforePromise = (command === 'codex' && cwd && !savedSession?.codexSessionId)
+        // Snapshot leve das sessões Codex existentes antes do spawn para
+        // identificar e persistir o ID novo sem usar `resume --last`.
+        const codexSessionsBeforePromise = (command === 'codex' && cwd && !launch.sessionId)
           ? snapshotCodexSessions(cwd).catch(() => [])
           : null
 
@@ -804,37 +879,12 @@ export function XTermView({
         if (command && RESUMABLE_AGENTS.includes(command)) {
           saveSession(ptyId, {
             sessionId: response.id,
-            claudeSessionId: savedSession?.claudeSessionId,
-            codexSessionId: savedSession?.codexSessionId,
+            claudeSessionId: command === 'claude' ? launch.sessionId : undefined,
+            codexSessionId: command === 'codex' ? launch.sessionId : undefined,
             cwd: cwd ?? '',
             agent: command,
             timestamp: Date.now(),
           })
-
-          // Detecta o claude session ID (JSONL) que foi criado após o spawn.
-          // Usa snapshot de metadata em vez de parse completo dos JSONLs.
-          if (command === 'claude' && cwd && claudeSessionsBeforePromise && !savedSession?.claudeSessionId) {
-            const detectClaudeSession = async () => {
-              const before = new Set((await claudeSessionsBeforePromise).map((s) => s.id))
-              for (let attempt = 0; attempt < 3; attempt++) {
-                await new Promise((r) => setTimeout(r, 4000))
-                if (disposed) return
-                const sessions = await snapshotClaudeSessions(cwd).catch(() => [])
-                const newSession = sessions.find((s) => !before.has(s.id))
-                if (newSession) {
-                  saveSession(ptyId, {
-                    sessionId: response.id,
-                    claudeSessionId: newSession.id,
-                    cwd: cwd ?? '',
-                    agent: command,
-                    timestamp: Date.now(),
-                  })
-                  return
-                }
-              }
-            }
-            void detectClaudeSession()
-          }
 
           // Codex precisa do ID especifico; `resume --last` junta terminais
           // diferentes na mesma conversa quando existem 2+ Codex abertos.
@@ -842,10 +892,14 @@ export function XTermView({
             const detectCodexSession = async () => {
               const before = new Set((await codexSessionsBeforePromise).map((s) => s.id))
               for (let attempt = 0; attempt < 4; attempt++) {
-                await new Promise((r) => setTimeout(r, 3000))
+                // Acorda no hint do watcher (session://new) ou no teto de 3s.
+                await Promise.race([
+                  new Promise((r) => setTimeout(r, 3000)),
+                  waitForSessionHint('codex'),
+                ])
                 if (disposed) return
                 const sessions = await snapshotCodexSessions(cwd).catch(() => [])
-                const newSession = sessions.find((s) => !before.has(s.id))
+                const newSession = claimDiscoveredSession('codex', cwd, before, sessions)
                 if (newSession) {
                   saveSession(ptyId, {
                     sessionId: response.id,
@@ -854,6 +908,7 @@ export function XTermView({
                     agent: command,
                     timestamp: Date.now(),
                   })
+                  onSessionIdRef.current?.(newSession.id)
                   return
                 }
               }
@@ -916,6 +971,7 @@ export function XTermView({
       window.clearTimeout(initialFitTimer)
       unlistenData?.()
       unlistenExit?.()
+      unlistenDragDrop?.()
       linkProviderDisposable?.dispose()
       completionMonitor?.dispose()
       completionMonitor = null
@@ -965,7 +1021,7 @@ export function XTermView({
     <>
       <div
         ref={containerRef}
-        className={styles.host}
+        className={`${styles.host} ${dropActive ? styles.dropActive : ''}`}
         style={{ background: getXtermTheme(terminalTheme).background }}
       />
       {bootLabel && !commandNotFound ? (
@@ -999,6 +1055,20 @@ export function XTermView({
             {linkActions.text}
           </span>
           <div className={styles.linkActionsButtons}>
+            {linkActions.isMarkdown && projectId ? (
+              <button
+                type="button"
+                className={styles.linkActionBtn}
+                onClick={() => {
+                  openMarkdownInGrid(linkActions.text)
+                  hideLinkActions()
+                }}
+                title={t('xterm.openInGrid')}
+                aria-label={t('xterm.openInGrid')}
+              >
+                <LayoutGrid size={14} />
+              </button>
+            ) : null}
             <button
               type="button"
               className={styles.linkActionBtn}
