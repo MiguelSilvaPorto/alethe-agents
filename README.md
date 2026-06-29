@@ -207,9 +207,10 @@ For larger changes, open an issue first so the direction can be discussed before
 Thanks to everyone helping shape Alethe.
 
 <p align="center">
-  <a href="https://github.com/Kc1t/alethe-agents/graphs/contributors">
-    <img src="https://contrib.rocks/image?repo=Kc1t/alethe-agents" alt="Alethe contributors" />
-  </a>
+  <!-- contributors:start -->
+  <a href="https://github.com/Kc1t"><img src="https://github.com/Kc1t.png?size=100" width="80" height="80" alt="Kc1t" title="Kc1t" /></a>
+  <a href="https://github.com/Jbnado"><img src="https://github.com/Jbnado.png?size=100" width="80" height="80" alt="Jbnado" title="Jbnado" /></a>
+  <!-- contributors:end -->
 </p>
 
 ## License
