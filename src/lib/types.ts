@@ -43,6 +43,8 @@ export type SubTab = {
   type: AgentType
   name: string
   cwd: string
+  /** Última vez que esta sub-tab foi ativada. Usada pra restaurar o último chat. */
+  lastUsedAt?: number
   /** ID do PTY no backend. null quando o terminal está disabled ou ainda não foi spawnado. */
   ptyId: string | null
   /** Resposta concluída e notificada, ainda não vista pelo usuário. */
@@ -209,6 +211,8 @@ export type Preferences = {
   topbarShowMemory: boolean
   /** Exibe a aba Source Control na sidebar. */
   showGitControl: boolean
+  /** Notifica quando uma janela de uso do Claude/Codex reseta, indicando qual. Default true. */
+  notifyOnLimitReset: boolean
   /** Quantos PTYs podem ser spawnados em paralelo (fila global). Default 3. */
   spawnConcurrency: number
   /** v2.2 — grid layout custom da workspace inteira (cross-grupo). */
@@ -270,6 +274,7 @@ export const DEFAULT_PREFERENCES: Preferences = {
   topbarShowProfile: true,
   topbarShowMemory: true,
   showGitControl: true,
+  notifyOnLimitReset: true,
   spawnConcurrency: 3,
 }
 

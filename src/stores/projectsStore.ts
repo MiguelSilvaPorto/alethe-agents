@@ -244,6 +244,7 @@ function makeDefaultTerminal(args: {
   firstTab: { type: AgentType; cwd: string; extraArgs?: string[] }
 }): Terminal {
   const tabId = nanoid()
+  const now = Date.now()
   return {
     id: nanoid(),
     name: args.name,
@@ -251,13 +252,14 @@ function makeDefaultTerminal(args: {
     activeTabId: tabId,
     disabled: false,
     laneVisible: null,
-    lastUsedAt: Date.now(),
+    lastUsedAt: now,
     tabs: [
       {
         id: tabId,
         type: args.firstTab.type,
         name: args.firstTab.type,
         cwd: args.firstTab.cwd,
+        lastUsedAt: now,
         ptyId: null,
         extraArgs: args.firstTab.extraArgs,
       },
@@ -292,6 +294,25 @@ function resolveTerminalCwd(terminal: Terminal | null | undefined): string {
   if (!terminal) return ''
   const activeTab = terminal.tabs.find((t) => t.id === terminal.activeTabId) ?? terminal.tabs[0]
   return activeTab?.cwd?.trim() || terminal.cwd?.trim() || ''
+}
+
+function touchTerminalUsage(terminal: Terminal, tabId = terminal.activeTabId): Terminal {
+  const now = Date.now()
+  const activeTabId = terminal.tabs.some((tab) => tab.id === tabId) ? tabId : terminal.activeTabId
+  return {
+    ...terminal,
+    lastUsedAt: now,
+    activeTabId,
+    tabs: terminal.tabs.map((tab) =>
+      tab.id === activeTabId ? { ...tab, lastUsedAt: now } : tab,
+    ),
+  }
+}
+
+function pickMostRecentTab(terminal: Terminal, excludeTabId?: string): SubTab | null {
+  const candidates = terminal.tabs.filter((tab) => tab.id !== excludeTabId)
+  if (candidates.length === 0) return null
+  return [...candidates].sort((a, b) => (b.lastUsedAt ?? 0) - (a.lastUsedAt ?? 0))[0] ?? candidates[0]
 }
 
 function collectTerminalPtyIds(terminals: Terminal[]): string[] {
@@ -1596,12 +1617,25 @@ export const useProjectsStore = create<ProjectsState>((set, get) => {
             tab.sourceId === terminalId &&
             tab.sourceProjectId === projectId,
         )
-        if (existing) return applyTabNavigation(state, existing)
         const project = state.projects.find((item) => item.id === projectId)
         const terminal = project?.terminals.find((item) => item.id === terminalId)
         if (!project || !terminal) return
+        const projects = state.projects.map((item) =>
+          item.id !== projectId
+            ? item
+            : {
+                ...item,
+                terminals: item.terminals.map((tab) =>
+                  tab.id === terminalId ? touchTerminalUsage(tab) : tab,
+                ),
+              },
+        )
+        if (existing) {
+          const nextState = { ...state, projects } as ProjectsState
+          return { projects, ...applyTabNavigation(nextState, existing) }
+        }
         const snapshot = makeSnapshot(
-          state,
+          { ...state, projects } as ProjectsState,
           [newContainer(project.id, [terminal.id], project.layoutMode)],
           project.id,
           null,
@@ -1621,7 +1655,7 @@ export const useProjectsStore = create<ProjectsState>((set, get) => {
           createdAt: now,
           updatedAt: now,
         }
-        return applyTabNavigation(state, tab, { addTab: true })
+        return { projects, ...applyTabNavigation({ ...state, projects } as ProjectsState, tab, { addTab: true }) }
       }),
 
     addTerminalToWorkspace: (projectId, terminalId) => {
@@ -1633,16 +1667,29 @@ export const useProjectsStore = create<ProjectsState>((set, get) => {
         const project = state.projects.find((item) => item.id === projectId)
         const terminal = project?.terminals.find((item) => item.id === terminalId)
         if (!project || !terminal) return
-        return appendSnapshotToActive(
-          state,
-          makeSnapshot(
-            state,
-            [newContainer(project.id, [terminal.id], project.layoutMode)],
-            project.id,
-            null,
-            terminal.id,
-          ),
+        const projects = state.projects.map((item) =>
+          item.id !== projectId
+            ? item
+            : {
+                ...item,
+                terminals: item.terminals.map((tab) =>
+                  tab.id === terminalId ? touchTerminalUsage(tab) : tab,
+                ),
+              },
         )
+        return {
+          projects,
+          ...appendSnapshotToActive(
+            { ...state, projects } as ProjectsState,
+            makeSnapshot(
+              { ...state, projects } as ProjectsState,
+              [newContainer(project.id, [terminal.id], project.layoutMode)],
+              project.id,
+              null,
+              terminal.id,
+            ),
+          ),
+        }
       })
     },
 
@@ -1667,8 +1714,18 @@ export const useProjectsStore = create<ProjectsState>((set, get) => {
         if (!container) return
         const activeTab = state.workspace.tabs.find((tab) => tab.id === state.workspace.activeTabId)
         if (!activeTab) return { activeProjectId: projectId }
+        const projects = state.projects.map((project) =>
+          project.id !== projectId
+            ? project
+            : {
+                ...project,
+                terminals: project.terminals.map((terminal) =>
+                  terminal.id === terminalId ? touchTerminalUsage(terminal) : terminal,
+                ),
+              },
+        )
         const snapshot = makeSnapshot(
-          state,
+          { ...state, projects } as ProjectsState,
           state.workspace.containers,
           projectId,
           state.workspace.activeGroupId,
@@ -1677,6 +1734,7 @@ export const useProjectsStore = create<ProjectsState>((set, get) => {
         const updatedTab = { ...activeTab, snapshot, updatedAt: Date.now() }
         return {
           activeProjectId: projectId,
+          projects,
           workspace: {
             ...state.workspace,
             focusedTerminalId: terminalId,
@@ -2055,7 +2113,7 @@ export const useProjectsStore = create<ProjectsState>((set, get) => {
       updateTerminal(projectId, terminalId, (t) => ({ ...t, laneVisible: visible })),
 
     markTerminalUsed: (projectId, terminalId) =>
-      updateTerminal(projectId, terminalId, (t) => ({ ...t, lastUsedAt: Date.now() })),
+      updateTerminal(projectId, terminalId, (t) => touchTerminalUsage(t)),
 
     /* ------------ workspace containers ------------ */
 
@@ -2070,7 +2128,7 @@ export const useProjectsStore = create<ProjectsState>((set, get) => {
             : {
                 ...p,
                 terminals: p.terminals.map((t) =>
-                  t.id === terminalId ? { ...t, lastUsedAt: now } : t,
+                  t.id === terminalId ? touchTerminalUsage(t) : t,
                 ),
               },
         )
@@ -2298,16 +2356,19 @@ export const useProjectsStore = create<ProjectsState>((set, get) => {
     /* ------------ sub-tabs ------------ */
 
     createSubTab: (projectId, terminalId, args) => {
+      const now = Date.now()
       let tab: SubTab = {
         id: nanoid(),
         type: args.type,
         name: args.name ?? args.type,
         cwd: args.cwd,
+        lastUsedAt: now,
         ptyId: null,
         extraArgs: args.extraArgs,
       }
       updateTerminal(projectId, terminalId, (t) => ({
         ...t,
+        lastUsedAt: now,
         tabs: [
           ...t.tabs,
           (tab = {
@@ -2326,18 +2387,28 @@ export const useProjectsStore = create<ProjectsState>((set, get) => {
         if (closingTab?.ptyId) cleanupPtys([closingTab.ptyId])
         const remaining = t.tabs.filter((s) => s.id !== tabId)
         if (remaining.length === 0) return t
-        const activeTabId = t.activeTabId === tabId ? remaining[0].id : t.activeTabId
-        return { ...t, tabs: remaining, activeTabId }
+        const activeTabId = t.activeTabId === tabId
+          ? pickMostRecentTab(t, tabId)?.id ?? remaining[0].id
+          : t.activeTabId
+        const next = { ...t, tabs: remaining, activeTabId }
+        return activeTabId ? touchTerminalUsage(next, activeTabId) : next
       }),
 
     setActiveTab: (projectId, terminalId, tabId) =>
-      updateTerminal(projectId, terminalId, (t) => ({
-        ...t,
-        activeTabId: tabId,
-        tabs: t.tabs.map((tab) =>
-          tab.id === tabId ? { ...tab, completionUnread: false } : tab,
-        ),
-      })),
+      updateTerminal(projectId, terminalId, (t) => {
+        if (!t.tabs.some((tab) => tab.id === tabId)) return t
+        const now = Date.now()
+        return {
+          ...t,
+          lastUsedAt: now,
+          activeTabId: tabId,
+          tabs: t.tabs.map((tab) =>
+            tab.id === tabId
+              ? { ...tab, completionUnread: false, lastUsedAt: now }
+              : tab,
+          ),
+        }
+      }),
 
     setSubTabPtyId: (projectId, terminalId, tabId, ptyId) =>
       updateSubTab(projectId, terminalId, tabId, (s) => ({ ...s, ptyId })),

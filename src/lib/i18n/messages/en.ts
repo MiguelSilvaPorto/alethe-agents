@@ -158,6 +158,10 @@ export const en = {
   'prefs.gitControlDesc': 'Show or hide the Source Control tab in the project sidebar.',
   'prefs.gitControlShow': 'Show',
   'prefs.gitControlHide': 'Hide',
+  'prefs.limitResetNotify': 'Limit reset alerts',
+  'prefs.limitResetNotifyDesc': 'Notify when a Claude or Codex usage window resets, showing which one.',
+  'prefs.limitResetNotifyOn': 'On',
+  'prefs.limitResetNotifyOff': 'Off',
   'prefs.terminalTheme': 'Terminal theme',
   'prefs.terminalThemeDesc': 'Follow the interface theme or choose a dedicated terminal palette.',
   'prefs.spawnConcurrency': 'Parallel spawns',
@@ -745,6 +749,8 @@ export const en = {
   'notif.responded': '{label} responded.',
   'notif.responseReadyInPath': 'Response ready in {path}.',
   'notif.responseReady': 'Response ready.',
+  'notif.limitResetTitle': 'Limit reset',
+  'notif.limitResetBody': '{agent} — {window} limit is available again',
 
   /* ---- token HUD ---- */
   'hud.title': 'Live spend',

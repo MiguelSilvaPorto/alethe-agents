@@ -43,12 +43,7 @@ async function ensureNotificationPermission(): Promise<boolean> {
   return permissionPromise
 }
 
-export async function notifyAgentDone(
-  title: string,
-  body: string,
-  meta?: { agent?: AgentType },
-): Promise<void> {
-  const agent = meta?.agent
+async function deliver(title: string, body: string, agent?: AgentType): Promise<void> {
   const pushToast = useUiStore.getState().pushToast
 
   // App na frente → só o banner in-app (banner + histórico).
@@ -70,4 +65,21 @@ export async function notifyAgentDone(
   } else {
     pushToast({ title, body, agent })
   }
+}
+
+export async function notifyAgentDone(
+  title: string,
+  body: string,
+  meta?: { agent?: AgentType },
+): Promise<void> {
+  return deliver(title, body, meta?.agent)
+}
+
+/** Aviso de reset de janela de uso (Claude/Codex). `agent` colore o toast in-app. */
+export async function notifyLimitReset(
+  title: string,
+  body: string,
+  agent?: AgentType,
+): Promise<void> {
+  return deliver(title, body, agent)
 }

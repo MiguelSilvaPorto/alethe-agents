@@ -510,6 +510,13 @@ function TerminalPage({ enabledCount }: { enabledCount: number }) {
         </div>
       </SettingsSection>
 
+      <SettingsSection id="limit-reset-notify" title={t('prefs.limitResetNotify')} description={t('prefs.limitResetNotifyDesc')}>
+        <div className={styles.segmented}>
+          <button type="button" className={preferences.notifyOnLimitReset ? styles.segmentActive : undefined} onClick={() => setPreferences({ notifyOnLimitReset: true })}>{t('prefs.limitResetNotifyOn')}</button>
+          <button type="button" className={!preferences.notifyOnLimitReset ? styles.segmentActive : undefined} onClick={() => setPreferences({ notifyOnLimitReset: false })}>{t('prefs.limitResetNotifyOff')}</button>
+        </div>
+      </SettingsSection>
+
       {isMacOS() ? (
         <SettingsSection
           id="native-terminal-macos"

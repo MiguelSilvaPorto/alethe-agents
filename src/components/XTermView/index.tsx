@@ -45,15 +45,13 @@ import {
   normalizePastedText,
   shouldScrollHostScrollback,
 } from './terminalInput'
+import {
+  detectTerminalLinks,
+  getLogicalTerminalLine,
+  terminalLinkRange,
+  type DetectedTerminalLink,
+} from './terminalLinks'
 import styles from './XTermView.module.css'
-
-type DetectedLink = {
-  text: string
-  index: number
-  kind: 'url' | 'path'
-  /** True quando o path aponta para um arquivo .md/.markdown. */
-  isMarkdown?: boolean
-}
 
 type LinkActionState = {
   text: string
@@ -62,12 +60,6 @@ type LinkActionState = {
   x: number
   y: number
 }
-
-const MARKDOWN_PATH_PATTERN = /\.(md|markdown)$/i
-
-const TERMINAL_LINK_PATTERN =
-  /https?:\/\/[^\s<>"'`]+|(?:[A-Za-z]:\\|\\\\)[^\s<>"'`|]+|(?:~|\/)[^\s<>"'`|]+/g
-const LINK_TRAILING_PUNCTUATION = /[),.;:]+$/
 
 const DARK_THEME = {
   background: '#101114',
@@ -230,38 +222,19 @@ function getXtermTheme(theme: Theme) {
   return DARK_THEME
 }
 
-function detectTerminalLinks(line: string): DetectedLink[] {
-  const links: DetectedLink[] = []
-  for (const match of line.matchAll(TERMINAL_LINK_PATTERN)) {
-    const raw = match[0]
-    const text = raw.replace(LINK_TRAILING_PUNCTUATION, '')
-    if (!text) continue
-    const kind = text.startsWith('http://') || text.startsWith('https://') ? 'url' : 'path'
-    links.push({
-      text,
-      index: match.index ?? 0,
-      kind,
-      isMarkdown: kind === 'path' && MARKDOWN_PATH_PATTERN.test(text),
-    })
-  }
-  return links
-}
-
 function makeXtermLink(
-  bufferLineNumber: number,
-  link: DetectedLink,
+  logicalLineStart: number,
+  columns: number,
+  link: DetectedTerminalLink,
   handlers: {
     open: (text: string) => void
-    hover: (event: MouseEvent, link: DetectedLink) => void
+    hover: (event: MouseEvent, link: DetectedTerminalLink) => void
     leave: () => void
   },
 ): ILink {
   return {
     text: link.text,
-    range: {
-      start: { x: link.index + 1, y: bufferLineNumber },
-      end: { x: link.index + link.text.length, y: bufferLineNumber },
-    },
+    range: terminalLinkRange(logicalLineStart, columns, link),
     decorations: { pointerCursor: true, underline: true },
     activate: (_event: MouseEvent, text: string) => handlers.open(text),
     hover: (event: MouseEvent) => handlers.hover(event, link),
@@ -388,11 +361,11 @@ export function XTermView({
     linkTooltipHideTimerRef.current = window.setTimeout(() => {
       linkTooltipHideTimerRef.current = null
       setLinkActions(null)
-    }, 180)
+    }, 600)
   }, [clearLinkTooltipHideTimer])
 
   const showLinkActions = useCallback(
-    (event: MouseEvent, link: DetectedLink) => {
+    (event: MouseEvent, link: DetectedTerminalLink) => {
       clearLinkTooltipHideTimer()
       setLinkActions({
         text: link.text,
@@ -533,13 +506,13 @@ export function XTermView({
     terminalRef.current = terminal
     linkProviderDisposable = terminal.registerLinkProvider({
       provideLinks: (bufferLineNumber, callback) => {
-        const line = terminal.buffer.active.getLine(bufferLineNumber - 1)?.translateToString(true)
-        if (!line) {
+        const logicalLine = getLogicalTerminalLine(terminal.buffer.active, bufferLineNumber)
+        if (!logicalLine?.text) {
           callback(undefined)
           return
         }
-        const links = detectTerminalLinks(line).map((link) =>
-          makeXtermLink(bufferLineNumber, link, {
+        const links = detectTerminalLinks(logicalLine.text).map((link) =>
+          makeXtermLink(logicalLine.startLine, terminal.cols, link, {
             open: (text) => void openLinkInBrowser(text),
             hover: showLinkActions,
             leave: scheduleHideLinkActions,

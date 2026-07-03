@@ -87,6 +87,7 @@ export const TerminalPane = memo(function TerminalPane({
   const setLaneVisible = useProjectsStore((s) => s.setLaneVisible)
   const setTerminalDisabled = useProjectsStore((s) => s.setTerminalDisabled)
   const killTerminal = useProjectsStore((s) => s.killTerminal)
+  const markTerminalUsed = useProjectsStore((s) => s.markTerminalUsed)
   const setSubTabPtyId = useProjectsStore((s) => s.setSubTabPtyId)
   const setSubTabSessionId = useProjectsStore((s) => s.setSubTabSessionId)
   const setSubTabCompletionUnread = useProjectsStore((s) => s.setSubTabCompletionUnread)
@@ -215,7 +216,10 @@ export const TerminalPane = memo(function TerminalPane({
     <div
       ref={setRefs}
       data-pane-box="1"
-      onPointerDown={() => setActiveTerminal(projectId, terminal.id)}
+      onPointerDown={() => {
+        markTerminalUsed(projectId, terminal.id)
+        setActiveTerminal(projectId, terminal.id)
+      }}
       className={`${styles.pane} ${isFocusMode ? styles.paneFocus : ''} ${terminal.disabled ? styles.disabled : ''} ${dragging ? styles.dragging : ''} ${dropTarget ? styles.dropTarget : ''}`}
     >
       <header className={styles.header}>

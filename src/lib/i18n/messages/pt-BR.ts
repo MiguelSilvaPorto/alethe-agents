@@ -158,6 +158,10 @@ export const ptBR: Record<MessageKey, string> = {
   'prefs.gitControlDesc': 'Mostre ou oculte a aba Source Control na sidebar de projetos.',
   'prefs.gitControlShow': 'Mostrar',
   'prefs.gitControlHide': 'Ocultar',
+  'prefs.limitResetNotify': 'Avisos de reset de limite',
+  'prefs.limitResetNotifyDesc': 'Notifica quando uma janela de uso do Claude ou Codex reseta, mostrando qual.',
+  'prefs.limitResetNotifyOn': 'Ligado',
+  'prefs.limitResetNotifyOff': 'Desligado',
   'prefs.terminalTheme': 'Tema do terminal',
   'prefs.terminalThemeDesc': 'Use o tema da interface ou escolha uma paleta exclusiva para terminais.',
   'prefs.spawnConcurrency': 'Spawns em paralelo',
@@ -745,6 +749,8 @@ export const ptBR: Record<MessageKey, string> = {
   'notif.responded': '{label} respondeu.',
   'notif.responseReadyInPath': 'Resposta pronta em {path}.',
   'notif.responseReady': 'Resposta pronta.',
+  'notif.limitResetTitle': 'Limite resetado',
+  'notif.limitResetBody': '{agent} — limite {window} liberado',
 
   /* ---- token HUD ---- */
   'hud.title': 'Gasto ao vivo',

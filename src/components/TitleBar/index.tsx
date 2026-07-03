@@ -7,9 +7,9 @@ import { ClaudeIcon, CodexIcon } from '../icons/AgentIcons'
 
 import { getCachedClaudeUsage } from '../../lib/claudeUsageCache'
 import { getCachedCodexUsage } from '../../lib/codexUsageCache'
+import { observeClaudeReset, observeCodexReset } from '../../lib/limitResetWatch'
 import { useT } from '../../lib/i18n'
 import { getMemoryStats, killPty } from '../../lib/tauri'
-import type { ClaudeUsage } from '../../lib/tauri'
 import { useProjectsStore } from '../../stores/projectsStore'
 import { useUiStore } from '../../stores/uiStore'
 import styles from './TitleBar.module.css'
@@ -36,13 +36,8 @@ function formatResetTime(resetsAt: string): string {
   }
 }
 
-function buildClaudeTooltip(usage: ClaudeUsage): string {
-  const pct = (v: number) => `${v.toFixed(0)}%`
-  return [
-    `5h session: ${pct(usage.five_hour.utilization)} (resets in ${formatResetTime(usage.five_hour.resets_at)})`,
-    `7d total: ${pct(usage.seven_day.utilization)} (resets in ${formatResetTime(usage.seven_day.resets_at)})`,
-    `7d opus: ${pct(usage.seven_day_opus.utilization)} (resets in ${formatResetTime(usage.seven_day_opus.resets_at)})`,
-  ].join('\n')
+function formatPct(value: number): string {
+  return `${value.toFixed(0)}%`
 }
 
 export function TitleBar() {
@@ -127,6 +122,7 @@ export function TitleBar() {
         const usage = await getCachedClaudeUsage()
         if (!cancelled) {
           setClaudeUsage(usage)
+          observeClaudeReset(usage)
           consecutiveFailures = 0
         }
       } catch {
@@ -161,6 +157,7 @@ export function TitleBar() {
         const usage = await getCachedCodexUsage()
         if (!cancelled) {
           setCodexUsage(usage)
+          observeCodexReset(usage)
           consecutiveFailures = 0
         }
       } catch {
@@ -381,16 +378,56 @@ export function TitleBar() {
           </button>
         ) : null}
         {preferences.topbarShowClaudeUsage && claudeUsage !== null ? (
-          <span className={`${styles.usagePill} ${styles.claudeUsage}`} style={{ '--pill-color': usagePillColor(claudeUsage.five_hour.utilization) } as React.CSSProperties} title={buildClaudeTooltip(claudeUsage)}>
-            <ClaudeIcon size={13} />
-            <span>{claudeUsage.five_hour.utilization.toFixed(0)}%</span>
-          </span>
+          <div className={styles.usageWidget}>
+            <span className={`${styles.usagePill} ${styles.claudeUsage}`} style={{ '--pill-color': usagePillColor(claudeUsage.five_hour.utilization) } as React.CSSProperties}>
+              <ClaudeIcon size={13} />
+              <span>{claudeUsage.five_hour.utilization.toFixed(0)}%</span>
+            </span>
+            <div className={styles.usagePopover} role="tooltip" aria-label={t('ui.titlebar.itemClaude')}>
+              <div className={styles.usagePopoverTitle}>{t('ui.titlebar.itemClaude')}</div>
+              <div className={styles.usagePopoverMain}>
+                <span>{t('widget.usage5h')}</span>
+                <strong>{formatPct(claudeUsage.five_hour.utilization)}</strong>
+              </div>
+              <div className={styles.usagePopoverLine}>
+                <span>{t('widget.week')}</span>
+                <strong>{formatPct(claudeUsage.seven_day.utilization)}</strong>
+              </div>
+              <div className={styles.usagePopoverLine}>
+                <span>{t('ws.usageOpusLabel')}</span>
+                <strong>{formatPct(claudeUsage.seven_day_opus.utilization)}</strong>
+              </div>
+              <div className={styles.usagePopoverFooter}>
+                {t('widget.resetLabel', { w: '5h' })} · {formatResetTime(claudeUsage.five_hour.resets_at)}
+              </div>
+            </div>
+          </div>
         ) : null}
         {preferences.topbarShowCodexUsage && codexUsage !== null ? (
-          <span className={`${styles.usagePill} ${styles.codexUsage}`} style={{ '--pill-color': usagePillColor(codexUsage.primary.used_percent) } as React.CSSProperties} title={t('ui.titlebar.codexUsageTooltip', { primary: codexUsage.primary.used_percent.toFixed(0), secondary: codexUsage.secondary.used_percent.toFixed(0) })}>
-            <CodexIcon size={13} />
-            <span>{codexUsage.primary.used_percent.toFixed(0)}%</span>
-          </span>
+          <div className={styles.usageWidget}>
+            <span className={`${styles.usagePill} ${styles.codexUsage}`} style={{ '--pill-color': usagePillColor(codexUsage.primary.used_percent) } as React.CSSProperties}>
+              <CodexIcon size={13} />
+              <span>{codexUsage.primary.used_percent.toFixed(0)}%</span>
+            </span>
+            <div className={styles.usagePopover} role="tooltip" aria-label={t('ui.titlebar.itemCodex')}>
+              <div className={styles.usagePopoverTitle}>{t('ui.titlebar.itemCodex')}</div>
+              <div className={styles.usagePopoverMain}>
+                <span>{t('widget.usage5h')}</span>
+                <strong>{formatPct(codexUsage.primary.used_percent)}</strong>
+              </div>
+              <div className={styles.usagePopoverLine}>
+                <span>{t('widget.week')}</span>
+                <strong>{formatPct(codexUsage.secondary.used_percent)}</strong>
+              </div>
+              <div className={styles.usagePopoverLine}>
+                <span>{t('widget.statusLabel')}</span>
+                <strong>{codexUsage.rate_limited ? t('widget.statusLimited') : t('widget.statusOk')}</strong>
+              </div>
+              <div className={styles.usagePopoverFooter}>
+                {t('widget.creditsLabel')} · {codexUsage.reset_credits}
+              </div>
+            </div>
+          </div>
         ) : null}
         {preferences.topbarShowMemory && ramMb !== null ? (
           <button type="button" className={styles.ramPill} title={t('ui.titlebar.openMemoryAnalytics')} onClick={() => openModal('memoryAnalytics')}>

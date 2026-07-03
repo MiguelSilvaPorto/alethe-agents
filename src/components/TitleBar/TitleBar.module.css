@@ -213,6 +213,13 @@
   flex-shrink: 0;
 }
 
+.usageWidget {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  margin-right: 6px;
+}
+
 .usagePill {
   display: inline-flex;
   align-items: center;
@@ -234,6 +241,73 @@
 
 .claudeUsage { box-shadow: inset 0 0 0 1px var(--agent-claude-soft); }
 .codexUsage { box-shadow: inset 0 0 0 1px var(--agent-codex-soft); }
+
+.usagePopover {
+  position: absolute;
+  top: calc(100% + 7px);
+  right: 0;
+  min-width: 184px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid var(--border-strong);
+  background: var(--bg-elevated);
+  box-shadow: 0 14px 30px rgba(0, 0, 0, 0.28);
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(-4px);
+  pointer-events: none;
+  transition:
+    opacity 120ms ease,
+    transform 120ms ease,
+    visibility 120ms ease;
+  z-index: 20;
+}
+
+.usageWidget:hover .usagePopover,
+.usageWidget:focus-within .usagePopover {
+  opacity: 1;
+  visibility: visible;
+  transform: translateY(0);
+  pointer-events: auto;
+}
+
+.usagePopoverTitle {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--fg);
+  margin-bottom: 8px;
+}
+
+.usagePopoverMain,
+.usagePopoverLine {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+  font-size: 11px;
+  color: var(--fg-muted);
+}
+
+.usagePopoverMain {
+  color: var(--fg);
+  margin-bottom: 4px;
+}
+
+.usagePopoverLine {
+  margin-top: 2px;
+}
+
+.usagePopover strong {
+  color: var(--fg);
+  font-weight: 700;
+}
+
+.usagePopoverFooter {
+  margin-top: 8px;
+  font-size: 10px;
+  color: var(--fg-faint);
+  line-height: 1.3;
+}
 
 .editWidgets {
   width: 24px;
