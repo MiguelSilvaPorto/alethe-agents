@@ -60,7 +60,7 @@ export const UNRESTRICTED_FLAG: Record<AgentType, string | null> = {
   shell: null,
   claude: '--dangerously-skip-permissions',
   codex: '--dangerously-bypass-approvals-and-sandbox',
-  opencode: '--dangerously-skip-permissions',
+  opencode: '--auto',
   // freebuff/mimo não documentam flag de skip-permissions própria.
   freebuff: null,
   mimo: null,

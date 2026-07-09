@@ -98,8 +98,8 @@ function buildResumeArgs(agent: AgentType, baseArgs: string[], sessionId: string
     return sessionId ? ['resume', sessionId, ...clean] : ['resume', '--last', ...clean]
   }
   // opencode
-  const clean = baseArgs.filter((a) => a !== '--resume')
-  return ['--resume', ...clean]
+  const clean = baseArgs.filter((a) => a !== '--session' && a !== '--resume')
+  return sessionId ? ['--session', sessionId, ...clean] : ['--continue', ...clean]
 }
 
 type ResumeTarget = {
@@ -157,7 +157,11 @@ export async function resetLastSession(): Promise<ResetLastSessionResult> {
       // Sessão atualmente aberta nesse pane (pra não resumir ela mesma).
       const active = getActiveSessions()[target.ptyId]
       const exclude: SessionExclude = {
-        id: target.agent === 'codex' ? active?.codexSessionId : active?.claudeSessionId,
+        id: target.agent === 'codex'
+          ? active?.codexSessionId
+          : target.agent === 'opencode'
+            ? active?.opencodeSessionId
+            : active?.claudeSessionId,
         before: active?.timestamp,
       }
       const sessionId = await latestSessionId(target.agent, cwd, exclude)
@@ -182,6 +186,7 @@ export async function resetLastSession(): Promise<ResetLastSessionResult> {
         sessionId: target.ptyId,
         claudeSessionId: target.agent === 'claude' ? sessionId ?? undefined : undefined,
         codexSessionId: target.agent === 'codex' ? sessionId ?? undefined : undefined,
+        opencodeSessionId: target.agent === 'opencode' ? sessionId ?? undefined : undefined,
         cwd,
         agent: target.agent,
         timestamp: Date.now(),

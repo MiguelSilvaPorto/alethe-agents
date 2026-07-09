@@ -14,20 +14,27 @@ use crate::diagnostics::append_spawn_log;
 use crate::paths::{scrollback_dir, scrollback_path};
 
 pub const SCROLLBACK_CAP_BYTES: usize = 4 * 1024 * 1024;
-pub const SCROLLBACK_FLUSH_INTERVAL_MS: u128 = 250;
+pub const SCROLLBACK_FLUSH_INTERVAL_MS: u128 = 2000;
 
 pub struct ScrollbackBuffer {
     pub data: VecDeque<u8>,
     pub last_flush: Instant,
     pub dirty: bool,
+    /// Quantos bytes de `data` já foram escritos em disco desde a última
+    /// reescrita completa. Quando o buffer é truncado (cap batido) vira 0
+    /// para forçar reescrita integral; no caso normal só os bytes novos
+    /// (delta) são appendaDOS no arquivo.
+    pub flushed_up_to: usize,
 }
 
 impl ScrollbackBuffer {
     pub fn new(initial: VecDeque<u8>) -> Self {
+        let flushed_up_to = initial.len();
         Self {
             data: initial,
             last_flush: Instant::now(),
             dirty: false,
+            flushed_up_to,
         }
     }
 }
@@ -585,9 +592,8 @@ pub fn load_scrollback(app: &AppHandle, id: &str) -> Result<VecDeque<u8>, String
     Ok(data.into())
 }
 
-/// Writer global de scrollback: uma única thread em background recebe
-/// `(path, bytes)` e escreve. Evita spawnar uma thread a cada flush (250ms por
-/// PTY ativo). Vive pela vida do processo — sem teardown por PTY, sem vazar thread.
+/// Writer global de scrollback: reescreve o arquivo inteiro (truncatura).
+/// Usado quando o buffer foi drenado (cap batido) — é o caminho raro.
 fn scrollback_writer() -> &'static std::sync::mpsc::Sender<(PathBuf, Vec<u8>)> {
     static WRITER: std::sync::OnceLock<std::sync::mpsc::Sender<(PathBuf, Vec<u8>)>> =
         std::sync::OnceLock::new();
@@ -599,6 +605,32 @@ fn scrollback_writer() -> &'static std::sync::mpsc::Sender<(PathBuf, Vec<u8>)> {
                     let _ = fs::create_dir_all(parent);
                 }
                 let _ = fs::write(&path, &bytes);
+            }
+        });
+        tx
+    })
+}
+
+/// Appender global de scrollback: faz append no arquivo existente.
+/// Caminho OTIMISTA e mais frequente — só os bytes delta desde o último flush.
+/// Thread única de fundo evita spawnar uma thread por flush.
+fn scrollback_appender() -> &'static std::sync::mpsc::Sender<(PathBuf, Vec<u8>)> {
+    static APPENDER: std::sync::OnceLock<std::sync::mpsc::Sender<(PathBuf, Vec<u8>)>> =
+        std::sync::OnceLock::new();
+    APPENDER.get_or_init(|| {
+        let (tx, rx) = std::sync::mpsc::channel::<(PathBuf, Vec<u8>)>();
+        thread::spawn(move || {
+            while let Ok((path, bytes)) = rx.recv() {
+                if let Some(parent) = path.parent() {
+                    let _ = fs::create_dir_all(parent);
+                }
+                if let Ok(mut file) = fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&path)
+                {
+                    let _ = file.write_all(&bytes);
+                }
             }
         });
         tx
@@ -619,6 +651,9 @@ pub fn push_scrollback(
     if buffer.data.len() > SCROLLBACK_CAP_BYTES {
         let excess = buffer.data.len() - SCROLLBACK_CAP_BYTES;
         buffer.data.drain(..excess);
+        // Dreno removeu bytes do início que já estavam no disco → próxima
+        // escrita precisa reescrever o arquivo inteiro.
+        buffer.flushed_up_to = 0;
     }
     buffer.dirty = true;
 
@@ -626,23 +661,44 @@ pub fn push_scrollback(
         return Ok(());
     }
 
-    // make_contiguous evita a cópia de 256KB que `iter().copied().collect()` fazia.
-    // Também encolhe a capacity se VecDeque ficou superdimensionado depois de drains.
-    let slice = buffer.data.make_contiguous();
-    let bytes = slice.to_vec();
-    if buffer.data.capacity() > SCROLLBACK_CAP_BYTES * 2 {
-        buffer.data.shrink_to(SCROLLBACK_CAP_BYTES);
-    }
-    buffer.last_flush = Instant::now();
-    buffer.dirty = false;
-    drop(buffer);
+    let total = buffer.data.len();
+    let flushed = buffer.flushed_up_to;
 
-    // Disk write em thread separada — segurar o reader thread aqui causava
-    // latência visível de digitação (10-50ms por flush no Windows) propagando
-    // pra TODOS os terminais com qualquer atividade.
+    // Nada novo desde o último flush.
+    if flushed >= total {
+        buffer.last_flush = Instant::now();
+        buffer.dirty = false;
+        return Ok(());
+    }
+
     let path = scrollback_path(app, id)?;
-    // Envia pro writer global em vez de spawnar uma thread por flush.
-    let _ = scrollback_writer().send((path, bytes));
+
+    if flushed == 0 {
+        // Reescreve o arquivo inteiro (truncatura aconteceu ou é o primeiro flush).
+        let slice = buffer.data.make_contiguous();
+        let bytes = slice.to_vec();
+        if buffer.data.capacity() > SCROLLBACK_CAP_BYTES * 2 {
+            buffer.data.shrink_to(SCROLLBACK_CAP_BYTES);
+        }
+        buffer.flushed_up_to = total;
+        buffer.last_flush = Instant::now();
+        buffer.dirty = false;
+        drop(buffer);
+        let _ = scrollback_writer().send((path, bytes));
+    } else {
+        // Append só dos bytes que ainda não foram escritos.
+        let slice = buffer.data.make_contiguous();
+        let bytes = slice[flushed..].to_vec();
+        if buffer.data.capacity() > SCROLLBACK_CAP_BYTES * 2 {
+            buffer.data.shrink_to(SCROLLBACK_CAP_BYTES);
+        }
+        buffer.flushed_up_to = total;
+        buffer.last_flush = Instant::now();
+        buffer.dirty = false;
+        drop(buffer);
+        let _ = scrollback_appender().send((path, bytes));
+    }
+
     Ok(())
 }
 
@@ -657,16 +713,40 @@ pub fn flush_scrollback(
     if !buffer.dirty {
         return Ok(());
     }
-    let bytes = buffer.data.iter().copied().collect::<Vec<_>>();
-    buffer.last_flush = Instant::now();
-    buffer.dirty = false;
-    drop(buffer);
-
+    let total = buffer.data.len();
+    let flushed = buffer.flushed_up_to;
     let path = scrollback_path(app, id)?;
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+
+    if flushed == 0 {
+        // Reescreve o arquivo inteiro.
+        let bytes = buffer.data.iter().copied().collect::<Vec<_>>();
+        buffer.flushed_up_to = total;
+        buffer.last_flush = Instant::now();
+        buffer.dirty = false;
+        drop(buffer);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+        }
+        fs::write(path, bytes).map_err(|error| error.to_string())
+    } else {
+        // Append só dos bytes novos.
+        let bytes = buffer.data.iter().skip(flushed).copied().collect::<Vec<_>>();
+        buffer.flushed_up_to = total;
+        buffer.last_flush = Instant::now();
+        buffer.dirty = false;
+        drop(buffer);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+        }
+        if let Ok(mut file) = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+        {
+            file.write_all(&bytes).map_err(|error| error.to_string())?;
+        }
+        Ok(())
     }
-    fs::write(path, bytes).map_err(|error| error.to_string())
 }
 
 pub fn delete_scrollback(app: &AppHandle, id: &str) -> Result<(), String> {

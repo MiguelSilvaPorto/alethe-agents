@@ -13,6 +13,8 @@ export type SavedSession = {
   claudeSessionId?: string
   /** Codex conversation ID (payload.id do session_meta em ~/.codex/sessions). */
   codexSessionId?: string
+  /** OpenCode session ID (ses_... do opencode session list). */
+  opencodeSessionId?: string
   cwd: string
   agent: string
   timestamp: number

@@ -171,7 +171,7 @@ export const ptBR: Record<MessageKey, string> = {
   'prefs.spawnConcurrencyReset': 'Voltar ao padrão',
   'prefs.agentsTitle': 'Agentes habilitados',
   'prefs.agentsDesc': 'Escolha quais agentes podem ser usados ao criar terminais e sub-tabs.',
-  'prefs.enabledAgents': 'Agentes habilitados ({count}/4)',
+  'prefs.enabledAgents': 'Agentes habilitados ({count}/6)',
   'prefs.resetSession': 'Resetar última sessão',
   'prefs.resetSessionDesc': 'Se reabrir o app não retomou seus agentes, isto acha a conversa mais recente de cada agente aberto e reinicia com resume.',
   'prefs.resetSessionButton': 'Retomar última sessão',

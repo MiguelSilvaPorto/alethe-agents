@@ -63,11 +63,13 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Assinatura do updater (minisign). Sem estes secrets o build FALHA,
-          # porque bundle.createUpdaterArtifacts está ligado. Gere o par com
-          # `npm run tauri signer generate` e cadastre nos secrets do repo.
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # Assinatura do updater (minisign) — opcional. Se as secrets não
+          # existirem, o build gera os pacotes normalmente mas sem os artefatos
+          # de assinatura (latest.json + .sig). O updater in-app fica inoperante
+          # até que as secrets sejam cadastradas.
+          # Gere o par com: npm run tauri signer generate
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY || '' }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD || '' }}
         with:
           tagName: v__VERSION__
           releaseName: 'Alethe v__VERSION__'
@@ -75,3 +77,12 @@ jobs:
           releaseDraft: false
           prerelease: false
           args: ${{ matrix.args }}
+
+      # Sobe o install.sh como asset da release (uma vez só — no job Linux)
+      - name: Upload install.sh
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          TAG="v$(node -e "console.log(require('./package.json').version)")"
+          gh release upload "$TAG" scripts/install.sh --clobber
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

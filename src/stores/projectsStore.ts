@@ -2416,11 +2416,29 @@ export const useProjectsStore = create<ProjectsState>((set, get) => {
     setSubTabCwd: (projectId, terminalId, tabId, cwd) =>
       updateSubTab(projectId, terminalId, tabId, (s) => ({ ...s, cwd })),
 
-    setSubTabCompletionUnread: (projectId, terminalId, tabId, unread) =>
-      updateSubTab(projectId, terminalId, tabId, (s) => ({
-        ...s,
-        completionUnread: unread,
-      })),
+    setSubTabCompletionUnread: (projectId, terminalId, tabId, unread) => {
+      // Não passa por update() → scheduleSave porque completionUnread é um
+      // badge volátil de sessão: não justifica reescrever projects.json inteiro.
+      set((state) => ({
+        projects: state.projects.map((p) =>
+          p.id !== projectId
+            ? p
+            : {
+                ...p,
+                terminals: p.terminals.map((t) =>
+                  t.id !== terminalId
+                    ? t
+                    : {
+                        ...t,
+                        tabs: t.tabs.map((s) =>
+                          s.id !== tabId ? s : { ...s, completionUnread: unread },
+                        ),
+                      },
+                ),
+              },
+        ),
+      }))
+    },
 
     setSubTabSessionId: (projectId, terminalId, tabId, sessionId) =>
       updateSubTab(projectId, terminalId, tabId, (s) => ({ ...s, sessionId })),

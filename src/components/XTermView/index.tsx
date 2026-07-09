@@ -27,6 +27,7 @@ import {
   openInFileExplorer,
   readClipboardText,
   resizePty,
+  snapshotOpenCodeSessions,
   spawnPty,
   snapshotClaudeSessions,
   snapshotCodexSessions,
@@ -484,6 +485,8 @@ export function XTermView({
     let pendingWrite = ''
     let lastCols = 0
     let lastRows = 0
+    let lastResizePtyAt = 0
+    let resizeRaf: number | null = null
     let forceNextResize = false
     let completionMonitor: AgentCompletionMonitor | null = null
     let linkProviderDisposable: { dispose: () => void } | null = null
@@ -536,18 +539,23 @@ export function XTermView({
         // Um syncScrollArea assíncrono já agendado pode ler `dimensions` de um
         // renderer morto e lançar ("Cannot read properties of undefined
         // (reading 'dimensions')"), o que cascateia e derruba a render. Força um
-        // re-fit/refresh no próximo frame pra reestabelecer as dimensões — só se
-        // o container tiver tamanho válido, e sempre dentro de try/catch.
-        window.requestAnimationFrame(() => {
+        // re-fit/refresh com retry em múltiplos frames pra estabilizar.
+        let attempts = 0
+        const tryRecover = () => {
+          attempts++
           try {
             const rect = container.getBoundingClientRect()
-            if (rect.width < 50 || rect.height < 30) return
+            if (rect.width < 50 || rect.height < 30) {
+              if (attempts < 5) window.requestAnimationFrame(tryRecover)
+              return
+            }
             fitAddon.fit()
             terminal.refresh(0, Math.max(0, terminal.rows - 1))
           } catch {
-            /* container invisível / em teardown — ignora */
+            if (attempts < 5) window.requestAnimationFrame(tryRecover)
           }
-        })
+        }
+        window.requestAnimationFrame(tryRecover)
       })
       terminal.loadAddon(webglAddon)
     } catch {
@@ -675,6 +683,11 @@ export function XTermView({
       }
 
       if (key === 'v') {
+        // Para OpenCode: não bloquear — deixar o xterm.js repassar pro PTY
+        // (OpenCode tem suporte nativo a colar imagens)
+        if (command === 'opencode') {
+          return true
+        }
         event.preventDefault()
         void readClipboardText()
           .catch(() => navigator.clipboard?.readText() ?? '')
@@ -696,6 +709,20 @@ export function XTermView({
     container.addEventListener('click', focusTerminal)
 
     const onPaste = (event: ClipboardEvent) => {
+      // Para OpenCode: verificar se há imagem no clipboard
+      if (command === 'opencode') {
+        const items = event.clipboardData?.items
+        if (items) {
+          for (const item of items) {
+            if (item.type.startsWith('image/')) {
+              // Tem imagem — NÃO bloquear, deixar o xterm.js repassar pro PTY
+              // OpenCode tem suporte nativo a processar imagens coladas
+              return
+            }
+          }
+        }
+      }
+      // Para outros agentes: comportamento atual (só texto)
       const raw = event.clipboardData?.getData('text/plain') ?? ''
       event.preventDefault()
       event.stopPropagation()
@@ -710,33 +737,45 @@ export function XTermView({
 
     const runResize = () => {
       resizeTimer = null
+      resizeRaf = null
       const id = ptyIdRef.current
       if (!id) return
-      // Só faz fit se o container tiver dimensões válidas (evita 0x0)
       const rect = container.getBoundingClientRect()
       if (rect.width < 50 || rect.height < 30) return
       try {
         fitAddon.fit()
       } catch {
-        // fit() pode falhar se o container não estiver visível
         return
       }
-      try {
-        terminal.refresh(0, Math.max(0, terminal.rows - 1))
-      } catch {
-        /* refresh pode falhar durante teardown/layout invisível */
+      const colsChanged = terminal.cols !== lastCols || terminal.rows !== lastRows
+      if (colsChanged) {
+        try {
+          terminal.refresh(0, Math.max(0, terminal.rows - 1))
+        } catch {}
       }
       const force = forceNextResize
       forceNextResize = false
-      if (!force && terminal.cols === lastCols && terminal.rows === lastRows) return
+      if (!force && !colsChanged) return
       lastCols = terminal.cols
       lastRows = terminal.rows
+      if (command === 'opencode') {
+        const now = Date.now()
+        if (now - lastResizePtyAt < 250) return
+        lastResizePtyAt = now
+      }
       void resizePty(id, terminal.cols, terminal.rows)
     }
     const scheduleResize = (force = false) => {
       forceNextResize ||= force
       if (resizeTimer !== null) window.clearTimeout(resizeTimer)
-      resizeTimer = window.setTimeout(runResize, 80)
+      if (resizeRaf !== null) window.cancelAnimationFrame(resizeRaf)
+      const debounceMs = command === 'opencode' ? 250 : 80
+      // RAF + setTimeout: RAF coalesce eventos no mesmo frame visual,
+      // setTimeout garante deadline máximo mesmo se RAF não disparar
+      resizeRaf = window.requestAnimationFrame(() => {
+        resizeRaf = null
+        resizeTimer = window.setTimeout(runResize, debounceMs)
+      })
     }
     const scheduleObservedResize = () => scheduleResize()
     const onResizeRequest = (event: Event) => {
@@ -808,8 +847,16 @@ export function XTermView({
           ? savedSession?.claudeSessionId
           : command === 'codex'
             ? savedSession?.codexSessionId
-            : undefined
+            : command === 'opencode'
+              ? savedSession?.opencodeSessionId
+              : undefined
         let resumeId = sessionId ?? savedConversationId
+        // OpenCode: quando temos savedSession mas não temos o ID da sessão,
+        // usar --continue pra retomar a última sessão (OpenCode não gera UUID
+        // no spawn como o Claude).
+        if (command === 'opencode' && savedSession && !resumeId) {
+          resumeId = '__continue__'
+        }
         // Claude: valida que a conversa ainda existe no cwd antes de passar
         // --resume. Se o id ficou órfão (conversa apagada, cwd diferente de onde
         // nasceu, ou o --session-id forçado nunca virou transcript), o CLI aborta
@@ -845,6 +892,12 @@ export function XTermView({
         // identificar e persistir o ID novo sem usar `resume --last`.
         const codexSessionsBeforePromise = (command === 'codex' && cwd && !launch.sessionId)
           ? snapshotCodexSessions(cwd).catch(() => [])
+          : null
+
+        // Snapshot leve das sessões OpenCode existentes antes do spawn para
+        // identificar e persistir o ID novo.
+        const opencodeSessionsBeforePromise = (command === 'opencode' && cwd && !launch.sessionId)
+          ? snapshotOpenCodeSessions(cwd).catch(() => [])
           : null
 
         // Serializa spawns globalmente — sem isso, abrir grupo com N×M terminais
@@ -895,6 +948,7 @@ export function XTermView({
             sessionId: response.id,
             claudeSessionId: command === 'claude' ? launch.sessionId : undefined,
             codexSessionId: command === 'codex' ? launch.sessionId : undefined,
+            opencodeSessionId: command === 'opencode' ? launch.sessionId : undefined,
             cwd: cwd ?? '',
             agent: command,
             timestamp: Date.now(),
@@ -928,6 +982,49 @@ export function XTermView({
               }
             }
             void detectCodexSession()
+          }
+
+          // OpenCode: detecta o ID da sessão nova pós-spawn (similar ao Codex).
+          // Quando usamos --continue, a sessão já existe — pegamos a mais recente.
+          if (command === 'opencode' && cwd && opencodeSessionsBeforePromise) {
+            const detectOpenCodeSession = async () => {
+              const before = new Set((await opencodeSessionsBeforePromise).map((s) => s.id))
+              for (let attempt = 0; attempt < 4; attempt++) {
+                await Promise.race([
+                  new Promise((r) => setTimeout(r, 3000)),
+                  waitForSessionHint('opencode'),
+                ])
+                if (disposed) return
+                const sessions = await snapshotOpenCodeSessions(cwd).catch(() => [])
+                // Primeiro tenta achar sessão NOVA (não estava no before)
+                const newSession = claimDiscoveredSession('opencode', cwd, before, sessions)
+                if (newSession) {
+                  saveSession(ptyId, {
+                    sessionId: response.id,
+                    opencodeSessionId: newSession.id,
+                    cwd: cwd ?? '',
+                    agent: command,
+                    timestamp: Date.now(),
+                  })
+                  onSessionIdRef.current?.(newSession.id)
+                  return
+                }
+                // Se usamos --continue e não achou nova, pega a mais recente
+                if (resumeId === '__continue__' && sessions.length > 0) {
+                  const mostRecent = sessions[0]
+                  saveSession(ptyId, {
+                    sessionId: response.id,
+                    opencodeSessionId: mostRecent.id,
+                    cwd: cwd ?? '',
+                    agent: command,
+                    timestamp: Date.now(),
+                  })
+                  onSessionIdRef.current?.(mostRecent.id)
+                  return
+                }
+              }
+            }
+            void detectOpenCodeSession()
           }
         }
 

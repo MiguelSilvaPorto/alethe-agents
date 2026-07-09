@@ -12,6 +12,21 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  install-script:
+    name: install.sh validation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate shell syntax
+        run: bash -n scripts/install.sh
+
+      - name: Check license header
+        run: head -2 scripts/install.sh | grep -q '#!/usr/bin/env bash'
+
+      - name: Run dry-run
+        run: bash scripts/install.sh --dry-run
+
   frontend:
     name: Frontend (typecheck + build)
     runs-on: ubuntu-latest

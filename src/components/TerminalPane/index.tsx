@@ -65,6 +65,7 @@ export const TerminalPane = memo(function TerminalPane({
     disabled: isFocusMode || preview,
   })
   const paneRef = useRef<HTMLDivElement | null>(null)
+  const terminalAreaRef = useRef<HTMLDivElement | null>(null)
   const setRefs = (node: HTMLDivElement | null) => {
     paneRef.current = node
     draggable.setNodeRef(node)
@@ -149,10 +150,15 @@ export const TerminalPane = memo(function TerminalPane({
     // Marca início do restart pra ignorar o exit event do PTY antigo (chega async).
     useTerminalsStore.getState().beginRestart(ptyId)
     try {
+      // Usa dimensões reais do terminal em vez de 80x24 hardcoded
+      const rect = terminalAreaRef.current?.getBoundingClientRect()
+      // 9px por coluna, 18px por linha (estimativa baseada em fontes típicas do xterm)
+      const cols = rect && rect.width >= 50 ? Math.max(10, Math.floor(rect.width / 9)) : 80
+      const rows = rect && rect.height >= 30 ? Math.max(5, Math.floor(rect.height / 18)) : 24
       await restartPty({
         id: ptyId,
-        cols: 80,
-        rows: 24,
+        cols,
+        rows,
         command: activeTab.type === 'shell' ? undefined : activeTab.type,
         cwd: activeTab.cwd || undefined,
         extraArgs: launch.args,
@@ -175,7 +181,7 @@ export const TerminalPane = memo(function TerminalPane({
 
   const cwd = activeTab?.cwd?.trim() || terminal.cwd?.trim() || ''
   const isAgentWithHistory =
-    activeTab && (activeTab.type === 'claude' || activeTab.type === 'codex' || activeTab.type === 'opencode')
+    activeTab && (activeTab.type === 'claude' || activeTab.type === 'codex')
 
   /** Resolve cwd: usa o configurado; senão pergunta ao backend o cwd vivo do PTY. */
   const resolveCwd = async (): Promise<string | null> => {
@@ -384,7 +390,7 @@ export const TerminalPane = memo(function TerminalPane({
           />
         ) : null}
 
-        <div className={styles.terminalArea}>
+        <div className={styles.terminalArea} ref={terminalAreaRef}>
           {terminal.disabled ? (
             <DisabledOverlay
               terminalName={terminal.name}

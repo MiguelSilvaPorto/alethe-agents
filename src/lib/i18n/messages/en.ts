@@ -171,7 +171,7 @@ export const en = {
   'prefs.spawnConcurrencyReset': 'Reset to default',
   'prefs.agentsTitle': 'Enabled agents',
   'prefs.agentsDesc': 'Choose which agents are available when creating terminals and sub-tabs.',
-  'prefs.enabledAgents': 'Enabled agents ({count}/4)',
+  'prefs.enabledAgents': 'Enabled agents ({count}/6)',
   'prefs.resetSession': 'Reset last session',
   'prefs.resetSessionDesc': 'If reopening the app did not resume your agents, this finds each open agent’s most recent conversation and restarts it with resume.',
   'prefs.resetSessionButton': 'Resume last session',

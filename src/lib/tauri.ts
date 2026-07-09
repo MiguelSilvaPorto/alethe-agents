@@ -497,6 +497,15 @@ export type CodexSessionSnapshot = {
   size_bytes: number
 }
 
+export type OpenCodeSessionSnapshot = {
+  id: string
+  modified_at_ms: number
+}
+
+export async function snapshotOpenCodeSessions(cwd: string): Promise<OpenCodeSessionSnapshot[]> {
+  return invoke<OpenCodeSessionSnapshot[]>('snapshot_opencode_sessions', { cwd })
+}
+
 export async function snapshotClaudeSessions(cwd: string): Promise<ClaudeSessionSnapshot[]> {
   return invoke<ClaudeSessionSnapshot[]>('snapshot_claude_sessions', { cwd })
 }

@@ -1,6 +1,8 @@
-use std::path::PathBuf;
-
 fn main() {
+    // Define cfg para uso condicional (ghostty_linked) mesmo em plataformas sem
+    // macOS, para evitar warnings de cfg inesperado no Rust.
+    println!("cargo:rustc-check-cfg=cfg(ghostty_linked)");
+
     // No macOS, linkamos o libghostty.a (engine do Ghostty) que o módulo
     // `ghostty_bridge` usa para embutir surfaces de terminal nativas. O binário
     // é o xcframework pré-buildado em src-tauri/vendor (ver fetch-ghostty.sh).
@@ -15,6 +17,7 @@ fn main() {
 
 #[cfg(target_os = "macos")]
 fn link_libghostty() {
+    use std::path::PathBuf;
     let manifest_dir = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
     let slice = manifest_dir
         .join("vendor")
@@ -69,7 +72,6 @@ fn link_libghostty() {
     // que `ghostty_bridge` possa ativar o caminho FFI real (em vez do stub) via
     // `#[cfg(ghostty_linked)]`.
     println!("cargo:rustc-cfg=ghostty_linked");
-    println!("cargo:rustc-check-cfg=cfg(ghostty_linked)");
 
     println!("cargo:rerun-if-changed={}", lib.display());
 }
